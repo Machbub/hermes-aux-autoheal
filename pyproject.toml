@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-aux-autoheal"
+version = "0.1.0"
+description = "Keep Hermes Agent's auxiliary task routes pointed at models that answer"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Camillus" }]
+keywords = ["hermes-agent", "llm", "health-check", "failover", "config"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = ["PyYAML>=5.4"]
+
+[project.optional-dependencies]
+# Without ruamel the PyYAML fallback works but deletes comments on write.
+comments = ["ruamel.yaml>=0.17"]
+dev = ["pytest>=7", "ruamel.yaml>=0.17"]
+
+[project.scripts]
+hermes-aux-autoheal = "hermes_aux_autoheal.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Machbub/hermes-aux-autoheal"
+Issues = "https://github.com/Machbub/hermes-aux-autoheal/issues"
+
+[tool.setuptools]
+packages = ["hermes_aux_autoheal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
