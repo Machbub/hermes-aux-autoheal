@@ -1,5 +1,7 @@
 # hermes-aux-autoheal
 
+[![tests](https://github.com/Machbub/hermes-aux-autoheal/actions/workflows/tests.yml/badge.svg)](https://github.com/Machbub/hermes-aux-autoheal/actions/workflows/tests.yml)
+
 Keeps [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s auxiliary
 task routes pointed at models that actually answer.
 
