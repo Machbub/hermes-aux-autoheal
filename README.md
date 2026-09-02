@@ -273,11 +273,22 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-59 tests, run against both YAML backends (with and without `ruamel.yaml`,
+97 tests, run against both YAML backends (with and without `ruamel.yaml`,
 since the fallback path is what most people hit first). No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config
 writer suite includes a genuine three-process write race.
+
+Two behaviours worth naming, because they are easy to regress:
+
+- **Sibling providers are probed separately.** Several providers may share one
+  `base_url` (one aggregator, different keys and quotas), so the health cache is
+  keyed by `provider|base_url|model`. Keying it without the provider makes them
+  collide and one sibling's verdict is read back as every sibling's — a dead key
+  looks alive.
+- **Cache entries migrate, they don't reset.** Upgrading a legacy 2-part key
+  fans it out to each sibling instead of dropping it, because a cache miss
+  silently resets the streak counters and re-enables flapping.
 
 ## Credits
 

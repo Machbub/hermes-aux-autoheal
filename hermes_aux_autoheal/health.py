@@ -148,22 +148,67 @@ class HealthCache:
             return {}
 
     @staticmethod
-    def key(base_url, model):
+    def key(base_url, model, provider=None):
+        """Cache key for one candidate.
+
+        Scoped by provider name when one is given. Several providers can share
+        a single ``base_url`` (one aggregator fronted by different keys and
+        quotas); keying on ``base_url|model`` alone makes them collide, so the
+        first probe's verdict is read back for every sibling — a dead key looks
+        alive and a live one looks dead. The provider name is what
+        distinguishes their credentials.
+
+        ``provider=None`` yields the legacy 2-part key, which
+        :meth:`migrate` upgrades in place.
+        """
+        if provider:
+            return f'{provider}|{base_url}|{model}'
         return f'{base_url}|{model}'
 
-    def get(self, base_url, model):
-        entry = self.data.get(self.key(base_url, model))
+    def migrate(self, candidates):
+        """Upgrade legacy ``base_url|model`` entries to provider-scoped keys.
+
+        Returns the number of entries copied. Without this the scoping change
+        silently resets every streak (an unscoped entry becomes a cache miss),
+        re-enabling the flapping hysteresis exists to prevent. A legacy entry
+        fans out to each provider sharing that base_url+model; their verdicts
+        then diverge on the next probe.
+        """
+        migrated = 0
+        if not self.data:
+            return 0
+        for cand in candidates:
+            legacy = self.key(cand['base_url'], cand['model'])
+            scoped = self.key(cand['base_url'], cand['model'],
+                              cand.get('provider'))
+            if scoped == legacy or scoped in self.data:
+                continue
+            entry = self.data.get(legacy)
+            if isinstance(entry, dict):
+                self.data[scoped] = dict(entry)
+                migrated += 1
+        # Remove a legacy key only once every sibling has its own entry.
+        for cand in candidates:
+            legacy = self.key(cand['base_url'], cand['model'])
+            scoped = self.key(cand['base_url'], cand['model'],
+                              cand.get('provider'))
+            if scoped != legacy and legacy in self.data and scoped in self.data:
+                self.data.pop(legacy, None)
+        return migrated
+
+    def get(self, base_url, model, provider=None):
+        entry = self.data.get(self.key(base_url, model, provider))
         return entry if isinstance(entry, dict) else {}
 
-    def fresh(self, base_url, model, *, now=None):
-        entry = self.get(base_url, model)
+    def fresh(self, base_url, model, *, provider=None, now=None):
+        entry = self.get(base_url, model, provider)
         if not entry:
             return False
         now = time.time() if now is None else now
         return (now - entry.get('ts', 0)) < self.ttl
 
-    def record(self, base_url, model, entry):
-        self.data[self.key(base_url, model)] = entry
+    def record(self, base_url, model, entry, provider=None):
+        self.data[self.key(base_url, model, provider)] = entry
 
     def save(self):
         directory = os.path.dirname(self.path) or '.'
@@ -195,11 +240,14 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
     now = time.time() if now is None else now
     eligible, rejected = [], []
 
+    cache.migrate(candidates)
+
     for cand in candidates:
         base_url, model = cand['base_url'], cand['model']
-        entry = cache.get(base_url, model)
+        provider = cand.get('provider')
+        entry = cache.get(base_url, model, provider)
 
-        if cache.fresh(base_url, model, now=now):
+        if cache.fresh(base_url, model, provider=provider, now=now):
             ok = entry.get('ok', False)
             latency = entry.get('latency', 99.0)
             err = entry.get('err', '')
@@ -217,7 +265,7 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
                                   promote_streak=promote_streak)
             entry.update(ok=ok, latency=round(latency, 2), err=err,
                          context=context, ts=now)
-            cache.record(base_url, model, entry)
+            cache.record(base_url, model, entry, provider)
 
         state = entry.get('state', 'up' if ok else 'down')
         if state != 'up':
