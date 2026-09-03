@@ -5,6 +5,37 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-09-04
+
+A second, different fallback chain: this time for the CHAT model, not the
+auxiliary summariser.
+
+The compression chain dedupes by model — three labels reselling one model are
+false diversity, because if the model dies upstream every label dies together.
+The chat chain deliberately does the opposite. The failures observed on a live
+install in one afternoon were `balance=0` on two models (key exhausted), `429
+model quota is temporarily paused` (model throttled), and a Cloudflare 522
+(origin unreachable). Three distinct failures, three distinct kinds of spare:
+
+1. **Same model, different key** — covers the key/quota death, which is the
+   most frequent. Capability-identical, cheapest possible degradation. Capped
+   at `depth // 2` slots so one model cannot fill the whole chain (that cap now
+   also applies across origins — a same-model spare on a NEW host still counts
+   against it).
+2. **Different origin** — covers the 522: a dead origin takes every key on it.
+3. **Backfill**, one slot per model.
+
+Ordering is by *closeness to what the user chose* (`chat_slot_key`), not by
+`tier_of`: the first live sync proved the naive reuse wrong when it offered a
+cheap flash model (tier 0) ahead of a spare key for the user's own flagship
+model (tier 2). For chat that is a capability downgrade before a
+like-for-like replacement. Slot stickiness is the same latency-blind guard as
+the compression chain.
+
+New functions: `chat_slot_key`, `outranks_for_chat_slot`, `pick_chat_chain`,
+`as_chat_entry`, `chat_chain_needs_write`; new constant
+`DEFAULT_CHAT_CHAIN_DEPTH` (4).
+
 ## [0.5.0] — 2026-09-03
 
 The third churn source, found the same way as the first two: by measuring the
