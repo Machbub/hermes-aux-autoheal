@@ -137,7 +137,9 @@ latencies, context windows, error bodies and orderings are from real runs.
 Every run:
 
 1. discovers the `(provider, model)` pairs your install can actually call, from
-   `custom_providers` in `config.yaml` (plus, optionally, a dashboard database)
+   `custom_providers` in `config.yaml` — models you pinned by hand, plus, for
+   providers that pin none, whatever their own `/v1/models` advertises (see
+   [Relays and gateways](#relays-and-gateways))
 2. sends each one a real 4-token completion — not a `/v1/models` listing, which
    aggregators happily populate with models they cannot route
 3. classifies failures, applies hysteresis, drops what's dead
@@ -156,6 +158,72 @@ The 503 is the case a listing-based check misses: the model was still
 advertised while no backend could serve it. That is a routing state, not a
 judgement about any vendor — aggregators multiplex changing upstream capacity
 and this is a normal consequence.
+
+## Relays and gateways
+
+Two ways people configure Hermes, and this tool has to handle both.
+
+**Models pinned by hand** — one entry per provider, models enumerated:
+
+```yaml
+custom_providers:
+  - name: ProviderA
+    base_url: https://provider-a.example/v1
+    key_env: PROVIDER_A_API_KEY
+    models:
+      fast-flash-v1: {}
+      big-thinking-v1: {}
+```
+
+**A relay in front of many upstreams** — one entry, one key, models left to the
+relay. Nobody enumerates sixty models by hand:
+
+```yaml
+custom_providers:
+  - name: Relay
+    base_url: https://relay.example/v1
+    key_env: RELAY_API_KEY
+    discover_models: true
+```
+
+For the second shape there is nothing in `config.yaml` to probe, so the
+provider's own `/v1/models` is asked for the candidate list. Listing is only
+used to find *names*; every name still gets a real completion before it can
+enter the route, because being listed is not evidence of being routable.
+
+A relay's catalogue is not all chat models — the same endpoint fronts
+embeddings, speech, image and moderation. Those are filtered by name and the
+reason is printed:
+
+```console
+  skip Relay/text-embedding-3-large: not a chat model (by name)
+  skip Relay/whisper-large-v3: not a chat model (by name)
+  skip Relay/flagship-pro: probe failed: HTTP 404 model_not_found
+  ok   Relay/fast-flash-v1: tier=0 ctx=200,000 probe=0.4s med=0.4s(n=1)
+```
+
+Name-based filtering is a heuristic and wrong in both directions on unusual
+names, so it applies **only** to discovered models. Anything you pinned by hand
+is taken at your word.
+
+Three practical notes:
+
+- The listing is fetched once per `base_url` per run, so sibling providers on
+  one relay do not each pay for it.
+- `--max-discovered` (default 25) caps how many models one listing contributes.
+  A gateway advertising 300 ids would otherwise mean 300 probes per tick, and
+  ranking only ever uses the top few.
+- A provider whose key is missing is never contacted. No point asking a gateway
+  for its catalogue with credentials you do not have.
+
+The honest limit: when every model reaches you through one relay, a chain of
+four is four models behind one endpoint. If the relay is what breaks, the whole
+chain breaks with it. Cross-provider fallback only buys you anything when there
+is a genuinely separate second endpoint — so pin a direct provider alongside the
+relay if you want that.
+
+Use `--no-discover-models` to switch listing off entirely and probe only what
+you pinned.
 
 ## Install
 
@@ -395,6 +463,8 @@ install ruamel.
 | `--config` | `$HERMES_HOME/config.yaml` | config path |
 | `--env-file` | `$HERMES_HOME/.env` | where API keys are read from |
 | `--sqlite-db` | none | also read providers from a dashboard database |
+| `--no-discover-models` | off | never ask a provider for its `/v1/models` listing |
+| `--max-discovered` | 25 | cap on models taken from one provider listing |
 | `--chain-depth` | 3 | fallback entries to keep |
 | `--call-timeout` | 300 | timeout written into each route entry |
 | `--probe-timeout` | 45 | health probe timeout |
@@ -434,6 +504,12 @@ Worth knowing before you rely on it:
   dropping unknowns would reject every model on a provider that publishes none.
 - **This only heals `auxiliary.*` routes.** Your chat model
   (`model.provider` / `model.default`) is never touched.
+- **One relay means one point of failure.** Discovery will happily fill a chain
+  from a single gateway's catalogue, and that chain is only as durable as the
+  gateway. See [Relays and gateways](#relays-and-gateways).
+- **Discovered models are filtered by name.** A chat model with an unusual name
+  containing something like `guard` or `audio` is skipped; pin it by hand if you
+  want it considered.
 
 ## Tests
 
@@ -441,13 +517,13 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-179 tests, run against both YAML backends — with and without `ruamel.yaml`,
+232 tests, run against both YAML backends — with and without `ruamel.yaml`,
 since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config writer
 suite includes a genuine three-process write race.
 
-Four behaviours worth naming, because they are easy to regress:
+Five behaviours worth naming, because they are easy to regress:
 
 - **Sibling providers are probed separately.** Several providers may share one
   `base_url` (one aggregator, different keys and quotas), so the health cache is
@@ -462,6 +538,9 @@ Four behaviours worth naming, because they are easy to regress:
 - **Smoothing must not hide a regression.** A single spike is ignored, but when
   the median itself moves the model does lose its slot. Smoothing that swallowed
   real slowdowns would be worse than no smoothing.
+- **A pinned model is never re-listed, and a keyless provider is never
+  contacted.** Discovery spends a listing request only where it has nothing to
+  go on and a key to go with it.
 
 ## Changelog
 
