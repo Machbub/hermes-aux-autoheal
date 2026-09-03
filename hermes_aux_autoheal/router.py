@@ -224,6 +224,25 @@ def primary_ident(current):
     return None
 
 
+def chain_entries(current):
+    """The existing ``fallback_chain`` entries, in order, as a tuple.
+
+    Order matters here where ``route_idents`` deliberately discards it: this is
+    what ``pick_chain`` defends slot by slot. Malformed entries are dropped
+    rather than raising — an unreadable chain degrades to a cold pick, not a
+    crash.
+    """
+    if not isinstance(current, dict):
+        return ()
+    chain = current.get('fallback_chain')
+    if not isinstance(chain, list):
+        return ()
+    return tuple(
+        e for e in chain
+        if isinstance(e, dict) and e.get('provider') and e.get('model')
+    )
+
+
 def model_id(cand):
     """Identity of the MODEL behind a candidate, ignoring who resells it.
 
@@ -233,10 +252,40 @@ def model_id(cand):
     return (cand.get('model') or '').rsplit('/', 1)[-1].lower()
 
 
-def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH):
+def outranks_for_slot(challenger, holder):
+    """Does ``challenger`` deserve ``holder``'s CHAIN slot?
+
+    Deliberately stricter than :func:`beats`, and deliberately blind to latency.
+
+    A fallback is not there to be fast, it is there to answer when the primary
+    stops answering. Tier and context window decide whether it can do that job;
+    probe latency does not, and on a busy relay it is the one input too noisy to
+    act on — the same model measured 1.3s, 6.7s and 42.0s inside twenty minutes.
+    Ranking chain slots on that number is what produced 9 pure reorder writes in
+    6.5 hours between two models that were tier-identical and context-identical.
+
+    Measured over 99 ticks of that pair: defending on latency with the standard
+    margins still permitted 6 swaps (and 0 only at an absurd 5s absolute
+    margin, which would also block real failovers). Defending on tier and
+    context alone permitted 0, while still yielding instantly to a genuinely
+    better-suited model.
+
+    Latency keeps its job — it orders candidates competing for an EMPTY slot.
+    It just no longer evicts an incumbent from an occupied one.
+    """
+    c_key = (tier_of(challenger['model']),
+             -min(challenger.get('context') or 0, 1_000_000))
+    h_key = (tier_of(holder['model']),
+             -min(holder.get('context') or 0, 1_000_000))
+    return c_key < h_key
+
+
+def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH, incumbent_chain=()):
     """Fallbacks that survive the failure the primary just had.
 
-    Two rules, both about not putting the same failure in the chain twice:
+    Three rules. The first two are about not putting the same failure in the
+    chain twice; the third is about not rewriting the config to say the same
+    thing in a different order.
 
     1. **One slot per MODEL.** Several providers may resell the identical model
        under different labels — one shared endpoint, different keys and quotas.
@@ -247,11 +296,49 @@ def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH):
     2. **Cross provider before backfilling.** A chain made only of one
        provider's models dies wholesale when the provider or its key is what
        broke — the orphaned-provider case this tool exists to survive.
+    3. **A slot holder keeps its slot unless out-ranked on tier or context.**
+       ``choose_primary`` guards the primary; the chain had no equivalent guard,
+       so latency noise alone could evict a healthy fallback — and a reorder is
+       a config write like any other. Pass ``incumbent_chain`` (the chain
+       currently on disk, in order) to defend it. The bar is
+       :func:`outranks_for_slot`, not :func:`beats`: see there for why latency
+       is excluded.
+
+    A holder is not defended when it has left ``ordered`` (retired, down,
+    demoted) or when it failed its latest probe — ``ok_now`` false must sink to
+    the back of the chain, never sit at ``chain[0]``, because Hermes stops
+    walking the chain at the first entry that errors mid-request.
     """
     seen_providers = {primary['provider']}
     seen_models = {model_id(primary)}
     chain = []
     rest = [c for c in ordered if c is not primary]
+
+    # pass 0: defend the chain already on disk (see rule 3)
+    if incumbent_chain:
+        by_ident = {ident_of(c): c for c in rest}
+        held = {ident_of(e) for e in incumbent_chain}
+        for entry in incumbent_chain:
+            if len(chain) >= depth:
+                break
+            holder = by_ident.get(ident_of(entry))
+            if holder is None:
+                continue                        # left the pool: retired/down
+            if not holder.get('ok_now', True):
+                continue                        # in grace: must not hold a slot
+            if model_id(holder) in seen_models:
+                continue                        # primary or an earlier slot covers it
+            # Another slot holder is not a challenger — it already has a slot,
+            # so preferring it here would be pure reordering, the exact churn
+            # rule 3 exists to stop.
+            if any(outranks_for_slot(c, holder) for c in rest
+                   if ident_of(c) not in held
+                   and model_id(c) not in seen_models
+                   and c.get('ok_now', True)):
+                continue
+            seen_providers.add(holder['provider'])
+            seen_models.add(model_id(holder))
+            chain.append(holder)
 
     # pass 1: a new provider AND a new model
     for c in rest:
@@ -289,7 +376,7 @@ def as_entry(cand, *, timeout=DEFAULT_CALL_TIMEOUT):
 
 def build(eligible, *, chain_depth=DEFAULT_CHAIN_DEPTH,
           call_timeout=DEFAULT_CALL_TIMEOUT, min_context=None,
-          incumbents=frozenset(), incumbent_primary=None,
+          incumbents=frozenset(), incumbent_primary=None, incumbent_chain=(),
           sticky_rel=DEFAULT_STICKY_REL, sticky_abs=DEFAULT_STICKY_ABS):
     """Compute the desired route. Returns None when nothing is verified alive.
 
@@ -298,8 +385,10 @@ def build(eligible, *, chain_depth=DEFAULT_CHAIN_DEPTH,
     an empty or guessed one turns a recoverable outage into a broken config.
 
     ``incumbents`` stabilises which models are in the route; ``incumbent_primary``
-    stabilises which one leads it. Pass both from the existing config (see
-    ``route_idents`` and ``primary_ident``) or neither for a cold build.
+    stabilises which one leads it; ``incumbent_chain`` (the on-disk chain, in
+    order) stabilises which fallback holds which slot. Pass all three from the
+    existing config (see ``route_idents``, ``primary_ident`` and
+    ``chain_entries``) or none of them for a cold build.
     """
     pool = list(eligible)
     if min_context:
@@ -316,7 +405,7 @@ def build(eligible, *, chain_depth=DEFAULT_CHAIN_DEPTH,
     if primary is None:
         return None
 
-    chain = pick_chain(ordered, primary, chain_depth)
+    chain = pick_chain(ordered, primary, chain_depth, incumbent_chain)
     return {
         'provider': primary['provider'],
         'model': primary['model'],
