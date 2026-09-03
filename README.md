@@ -1,6 +1,9 @@
 # hermes-aux-autoheal
 
 [![tests](https://github.com/Machbub/hermes-aux-autoheal/actions/workflows/tests.yml/badge.svg)](https://github.com/Machbub/hermes-aux-autoheal/actions/workflows/tests.yml)
+[![release](https://img.shields.io/github/v/release/Machbub/hermes-aux-autoheal)](https://github.com/Machbub/hermes-aux-autoheal/releases)
+[![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
+[![license](https://img.shields.io/github/license/Machbub/hermes-aux-autoheal)](LICENSE)
 
 Keeps [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s auxiliary
 task routes pointed at models that actually answer.
