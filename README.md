@@ -7,6 +7,19 @@ task routes pointed at models that actually answer.
 
 Third-party project. Not affiliated with or endorsed by Nous Research.
 
+## The incident
+
+A long conversation died mid-compaction. The model named under
+`auxiliary.compression` had been retired by the aggregator serving it weeks
+earlier — it was still listed in that endpoint's `/v1/models`, so nothing looked
+broken until the compression call itself returned `no available channel for
+model`. Hermes' `fallback_chain` was configured, but the next two entries had
+gone stale the same way.
+
+The fix wasn't a better fallback list. It was checking, on a timer, whether the
+names in that list still resolve to something that answers. That is all this
+tool does.
+
 ## The problem
 
 Hermes lets you pin a provider/model per auxiliary task — context compression,
@@ -22,18 +35,94 @@ auxiliary:
         model: other-model
 ```
 
-That config is static. You write it once, and nothing ever checks whether those
-entries still work. Aggregator gateways retire models without warning, keys get
-revoked, providers go down. When that happens the route keeps naming a corpse,
-and you find out when a background task fails — for compression, that surfaces
-as a conversation that stalls or dies right when it grew long enough to need
-compacting.
+That config is static. Nothing ever re-checks it. Aggregator gateways retire
+models without warning, keys get revoked, providers go down — and the route
+keeps naming a corpse. You find out when a background task fails, which for
+compression means a conversation that stalls exactly when it grew long enough
+to need compacting.
 
-Hermes' own `fallback_chain` is reactive: it moves on after a call fails. What's
-missing is anyone checking, ahead of time, whether the names in that list are
-still real.
+Hermes' `fallback_chain` is reactive: it moves on *after* a call fails. Nobody
+checks beforehand whether the names in the list are still real.
 
-## What this does
+## What it looks like
+
+Dry run is the default. Nothing touches your config until you pass `--apply`.
+
+```console
+$ hermes-aux-autoheal --task compression --verbose
+  ok   ProviderA/swift-flash: tier=0 ctx=1,000,000 probe=0.7s
+  ok   ProviderA/quick-flash: tier=0 ctx=1,048,576 probe=1.4s HELD
+  ok   ProviderB/rapid-mini: tier=0 ctx=1,000,000 probe=2.0s
+  ok   ProviderA/swift-lite: tier=0 ctx=1,000,000 probe=2.5s
+  ok   ProviderB/compact-flash: tier=0 ctx=1,000,000 probe=5.2s HELD
+  ok   ProviderA/legacy-flash: tier=0 ctx=1,000,000 probe=26.1s
+  ok   ProviderB/compact-mini: tier=0 ctx=204,800 probe=2.1s
+  ok   ProviderB/mid-27b: tier=0 ctx=131,072 probe=8.8s
+  ok   ProviderC/general-v5: tier=1 ctx=1,000,000 probe=4.8s HELD
+  ok   ProviderA/general-v2: tier=1 ctx=1,048,576 probe=9.4s
+  ok   ProviderA/general-h3: tier=1 ctx=262,144 probe=1.0s
+  ok   ProviderE/reasoner-xl: tier=2 ctx=1,000,000 probe=3.4s
+DRY RUN would update compression: primary=ProviderA/swift-flash,
+  chain=[('ProviderB', 'rapid-mini'), ('ProviderC', 'general-v5'),
+         ('ProviderE', 'reasoner-xl')] (primary changed)
+re-run with --apply to write it
+```
+
+`HELD` marks a model already in the route: it is ranked at a discounted latency
+so a challenger has to win by a real margin, not by probe noise. See
+[Stability](#stability).
+
+With `--apply`, the same run produces this diff:
+
+```diff
+ auxiliary:
+   compression:
+-    provider: ProviderB
+-    model: compact-flash
++    provider: ProviderA
++    model: swift-flash
+     timeout: 300
+     fallback_chain:
+-      - provider: ProviderA
+-        model: quick-flash
+-        base_url: https://a.example/v1
+-        key_env: PROVIDERA_API_KEY
++      - provider: ProviderB
++        model: rapid-mini
++        base_url: https://b.example/v1
++        key_env: PROVIDERB_API_KEY
+         api_mode: chat_completions
+         timeout: 300
+       - provider: ProviderC
+         model: general-v5
+         base_url: https://c.example/v1
+         key_env: PROVIDERC_API_KEY
+         api_mode: chat_completions
+         timeout: 300
+-      - provider: ProviderD
+-        model: general-v5
++      - provider: ProviderE
++        model: reasoner-xl
+         base_url: https://e.example/v1
+-        key_env: PROVIDERD_API_KEY
++        key_env: PROVIDERE_API_KEY
+         api_mode: chat_completions
+         timeout: 300
+```
+
+Only the `auxiliary.compression` block changes. Everything else in the file —
+including comments, when `ruamel.yaml` is installed — is byte-identical, and a
+timestamped backup is written first.
+
+Two details in that diff are deliberate. The chain crosses to a different
+provider before taking a second model from the primary's own provider. And
+`ProviderD` and `ProviderE` share one `base_url` with different keys, which is
+why the health cache is keyed per provider rather than per endpoint.
+
+Provider and model names throughout this README are placeholders. The
+latencies, context windows, error bodies and orderings are from real runs.
+
+## What it does
 
 Every run:
 
@@ -45,30 +134,18 @@ Every run:
 4. rewrites the route from what's verified alive, ranked for the job
 5. writes `config.yaml` safely enough to run on a timer beside other writers
 
+Probing rather than listing is the point. A typical rejection looks like this:
+
 ```console
-$ hermes-aux-autoheal --task compression --verbose
   skip ProviderA/fast-preview: probe failed: HTTP 429 quota temporarily paused
   skip ProviderB/legacy-chat-v4: probe failed: HTTP 503 {"code":"model_not_found",
        "message":"no available channel for model legacy-chat-v4"}
-  ok   ProviderA/swift-8b: tier=0 ctx=1,000,000 probe=7.8s
-  ok   ProviderA/compact-mini: tier=0 ctx=204,800 probe=2.3s
-  ok   ProviderA/mid-27b: tier=0 ctx=131,072 probe=3.5s
-  ok   ProviderB/reasoner-xl: tier=2 ctx=1,000,000 probe=4.4s
-DRY RUN would update compression: primary=ProviderA/swift-8b,
-  chain=[('ProviderB', 'reasoner-xl'), ('ProviderA', 'compact-mini'),
-         ('ProviderA', 'mid-27b')] (primary changed)
-re-run with --apply to write it
 ```
 
-Provider and model names above are placeholders over a real run — the latencies,
-context windows and error bodies are what actually came back. The 503 is the
-interesting one: the model was still listed in that endpoint's `/v1/models`
-while no backend could serve it, which is exactly the failure a listing-based
-check misses. That is a routing state, not a judgement about any vendor;
-aggregators multiplex changing upstream capacity and this is a normal
-consequence.
-
-Dry run is the default. Nothing writes your config until you pass `--apply`.
+The 503 is the case a listing-based check misses: the model was still
+advertised while no backend could serve it. That is a routing state, not a
+judgement about any vendor — aggregators multiplex changing upstream capacity
+and this is a normal consequence.
 
 ## Install
 
@@ -76,7 +153,7 @@ Dry run is the default. Nothing writes your config until you pass `--apply`.
 pip install git+https://github.com/Machbub/hermes-aux-autoheal
 ```
 
-Or clone and run in place — the only hard dependency is PyYAML, which Hermes
+Or clone and run in place. The only hard dependency is PyYAML, which Hermes
 already requires:
 
 ```bash
@@ -85,7 +162,7 @@ cd hermes-aux-autoheal
 python -m hermes_aux_autoheal.cli --help
 ```
 
-Install `ruamel.yaml` too if you keep comments in `config.yaml`. Without it the
+Install `ruamel.yaml` as well if your `config.yaml` has comments. Without it the
 PyYAML fallback works but **deletes every comment in the file** on write. See
 [Comments](#comments).
 
@@ -105,8 +182,8 @@ hermes-aux-autoheal --task summarization --apply
 */5 * * * * hermes-aux-autoheal --apply --prune-backups >> ~/.hermes/logs/autoheal.log 2>&1
 ```
 
-Silent when the route is already correct, so a cron entry only speaks when
-something changed.
+Output is silent when the route is already correct, so a cron entry only speaks
+when something changed.
 
 Exit codes, for monitoring:
 
@@ -119,39 +196,43 @@ Exit codes, for monitoring:
 ## How models are ranked
 
 For a background summarizer, cheap and fast beats smart. A frontier reasoning
-model given 250k tokens to compress will often hit its own timeout — the result
-isn't a worse summary, it's no summary and a stalled conversation.
+model given 250k tokens to compress will often hit its own timeout — and the
+result is not a worse summary, it is no summary and a stalled conversation.
 
-So ranking is: freshly-verified first, then cheap/fast tiers, then widest
-context window, then lowest probe latency. Models whose names mark them as
-heavy reasoning variants sink to the bottom of the chain but stay in it as a
-last resort.
+Ranking order: freshly-verified first, then cheap/fast tiers, then widest
+context window, then lowest probe latency. Models whose names mark them as heavy
+reasoning variants sink to the bottom of the chain but stay in it as a last
+resort.
 
-The defaults match generic size and speed descriptors (`mini`, `flash`, `lite`,
-`8b`; `thinking`, `reason`, `ultra`) rather than vendor brand names, so they
-stay useful across providers and age better. Override them per-run:
+Tier patterns match generic size and speed words (`mini`, `flash`, `lite`, `8b`;
+`thinking`, `reason`, `ultra`) rather than vendor brand names, so they stay
+useful across providers and age better. Override per run:
 
 ```bash
 hermes-aux-autoheal --fast-pattern 'my-quick-model|another-fast-one' \
                     --heavy-pattern 'my-big-model'
 ```
 
-Nothing here rates a vendor's quality. A "heavy" model is not worse; it is
-being kept out of a job where its cost and latency are a liability. A model
-matching neither pattern lands in the middle tier, which is a fine place to be.
+None of this rates a vendor's quality. A "heavy" model is not worse; it is being
+kept out of a job where its cost and latency are a liability. A model matching
+neither pattern lands in the middle tier, which is a fine place to be.
 
-The fallback chain deliberately crosses providers before it takes a second
-model from the primary's provider. A chain of one provider's models dies
-wholesale when the provider or its key is what broke — which is the exact
-failure this tool exists to survive.
+The fallback chain crosses providers before it takes a second model from the
+primary's provider. A chain of one provider's models dies wholesale when the
+provider or its key is what broke — the exact failure this tool exists to
+survive.
 
-## Hysteresis
+## Stability
 
-This is the part that took a real incident to get right. Probe-and-write on
-every tick makes a model sitting near the timeout boundary flap: in, out, in,
-out, each swing rewriting config and firing a notification. Observed in the
-wild: one model entered and left a chain four times in 2.5 hours, having
-answered a probe in 23s against a 30s limit.
+Probe-and-write on every tick is unstable in two different ways, and each needs
+its own guard.
+
+### A failing model that keeps recovering
+
+A model sitting near the timeout boundary flaps: in, out, in, out, each swing
+rewriting config and firing a notification. Observed in the wild: one model
+entered and left a chain four times in 2.5 hours, having answered a probe in 23s
+against a 30s limit.
 
 Failures are therefore classified:
 
@@ -162,15 +243,45 @@ Failures are therefore classified:
   passing blip, so it needs `--demote-streak` consecutive strikes (default 2).
 
 Recovery is symmetric: a model that was down needs `--promote-streak`
-consecutive passes before it's trusted again.
+consecutive passes before it is trusted again. While a model is inside its grace
+period it stays in the chain but is barred from the primary slot.
 
-While a model is inside its grace period it stays in the chain but is barred
-from the primary slot.
+Streaks live in a health cache (`~/.hermes/.aux_autoheal_health.json`) so they
+survive between cron ticks. Results are reused for `--ttl` seconds (default 600)
+to keep probe traffic down; `--no-cache` forces a fresh probe of everything.
 
-Streaks are persisted in a health cache (`~/.hermes/.aux_autoheal_health.json`),
-so they survive between cron ticks. Results are reused for `--ttl` seconds
-(default 600) to keep probe traffic down; `--no-cache` forces a fresh probe of
-everything.
+### Two healthy models trading places
+
+Failure classification does nothing here, because nothing is failing. Two models
+of the same tier and the same context window, separated only by probe latency
+that swings a few hundred milliseconds, will swap rank almost every tick — and
+each swap is a config write.
+
+Measured on a live install before this guard existed: **130 config writes across
+245 ticks**, 53%, the primary bouncing between two models that were both
+perfectly healthy.
+
+So a model already in the route is compared at a discounted latency, and a
+challenger must beat it by **both** margins:
+
+| flag | default | meaning |
+|------|---------|---------|
+| `--sticky-rel` | 0.30 | challenger must be 30% faster |
+| `--sticky-abs` | 0.5 | and 0.5s faster in absolute terms |
+
+Both, because either alone is cheap to hit by accident. At 0.4s a 30% lead is
+120ms of noise; at 12s a 0.5s lead is rounding. Set either to `0` to disable.
+
+Hysteresis applies to latency only. Tier and context window are stable
+properties of a model, so a challenger that wins on either takes the slot
+immediately — there is nothing noisy to smooth out. A model that fails its
+probe loses the slot regardless.
+
+Two slots need protecting, and they need different code. Route **membership** is
+protected by ranking at a discount, so an outsider needs a margin to push a
+member out. The **primary slot** is protected by comparing the leader against
+the incumbent directly, because when both are already in the route the ranking
+discount applies to both sides and cancels out.
 
 ## Writing config.yaml safely
 
@@ -179,8 +290,8 @@ lock. Anything running **outside** the Hermes package — a cron job, a sync
 daemon, this tool — cannot reach that lock. Two writers, no mutual exclusion,
 and eventually one truncates the other's file.
 
-`config_io.config_transaction` is the answer, and it's usable on its own if
-you're writing your own Hermes helper:
+`config_io.config_transaction` is the answer, and it is usable on its own if you
+are writing your own Hermes helper:
 
 ```python
 from hermes_aux_autoheal import config_io
@@ -236,6 +347,8 @@ install ruamel.
 | `--ttl` | 600 | reuse cached probe results for this long |
 | `--demote-streak` | 2 | ambiguous failures before eviction |
 | `--promote-streak` | 2 | passes before a down model is trusted |
+| `--sticky-rel` | 0.30 | fraction faster a challenger must be to displace |
+| `--sticky-abs` | 0.5 | seconds faster it must also be |
 | `--no-cache` | off | probe everything, ignore the cache |
 | `--hermes-path` | `$HERMES_PACKAGE` | Hermes package path, for context windows |
 | `--no-context-lookup` | off | skip context-window resolution |
@@ -258,14 +371,13 @@ Worth knowing before you rely on it:
 - **Probing costs tokens.** Four output tokens per model per TTL window. Small,
   but not zero on a metered key.
 - **Ranking is heuristic.** Tiers come from substring matching on model names,
-  so a model named unconventionally lands in the middle tier. It won't be wrong
-  so much as unopinionated.
+  so an unconventionally named model lands in the middle tier. Not wrong so
+  much as unopinionated.
 - **Context windows come from provider metadata**, which is sometimes absent.
   Models with an unknown window are not excluded by `--min-context`, since
   dropping unknowns would reject every model on a provider that publishes none.
 - **This only heals `auxiliary.*` routes.** Your chat model
-  (`model.provider` / `model.default`) is never touched. If that's what you
-  want, other projects do that.
+  (`model.provider` / `model.default`) is never touched.
 
 ## Tests
 
@@ -273,22 +385,28 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-97 tests, run against both YAML backends (with and without `ruamel.yaml`,
-since the fallback path is what most people hit first). No network: probes and
+139 tests, run against both YAML backends — with and without `ruamel.yaml`,
+since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
-route building, and config writing all run against real files. The config
-writer suite includes a genuine three-process write race.
+route building, and config writing all run against real files. The config writer
+suite includes a genuine three-process write race.
 
-Two behaviours worth naming, because they are easy to regress:
+Three behaviours worth naming, because they are easy to regress:
 
 - **Sibling providers are probed separately.** Several providers may share one
   `base_url` (one aggregator, different keys and quotas), so the health cache is
   keyed by `provider|base_url|model`. Keying it without the provider makes them
-  collide and one sibling's verdict is read back as every sibling's — a dead key
+  collide, and one sibling's verdict is read back as every sibling's — a dead key
   looks alive.
 - **Cache entries migrate, they don't reset.** Upgrading a legacy 2-part key
   fans it out to each sibling instead of dropping it, because a cache miss
   silently resets the streak counters and re-enables flapping.
+- **Hysteresis must not become lock-in.** A jitter-sized lead is rejected, but a
+  decisive one still wins, and a failing incumbent always loses its slot.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 

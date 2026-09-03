@@ -56,6 +56,12 @@ def build_parser():
                    help='ambiguous failures before a model leaves the route')
     p.add_argument('--promote-streak', type=int, default=health.DEFAULT_PROMOTE_STREAK,
                    help='passes before a down model is trusted again')
+    p.add_argument('--sticky-rel', type=float, default=router.DEFAULT_STICKY_REL,
+                   help='fraction faster a challenger must be to displace a '
+                        'model already in the route (0 disables)')
+    p.add_argument('--sticky-abs', type=float, default=router.DEFAULT_STICKY_ABS,
+                   help='seconds faster a challenger must also be, in absolute '
+                        'terms (0 disables)')
     p.add_argument('--cache',
                    help='health cache path (default: $HERMES_HOME/.aux_autoheal_health.json)')
     p.add_argument('--no-cache', action='store_true',
@@ -132,25 +138,35 @@ def main(argv=None):
 
     for cand, why in rejected:
         vprint(f'  skip {cand["provider"]}/{cand["model"]}: {why}')
-    for c in router.rank(eligible):
+
+    aux = config.get('auxiliary')
+    current = (aux or {}).get(args.task)
+    incumbents = router.route_idents(current)
+    incumbent_primary = router.primary_ident(current)
+
+    for c in router.rank(eligible, incumbents,
+                         sticky_rel=args.sticky_rel, sticky_abs=args.sticky_abs):
         grace = '' if c['ok_now'] else f' GRACE(strike {c["fail_streak"]}/{args.demote_streak})'
+        held = ' HELD' if (c['provider'], c['model']) in incumbents else ''
         ctx = f'{c["context"]:,}' if c.get('context') else 'unknown'
         vprint(f'  ok   {c["provider"]}/{c["model"]}: '
                f'tier={router.tier_of(c["model"])} ctx={ctx} '
-               f'probe={c["latency"]:.1f}s{grace}')
+               f'probe={c["latency"]:.1f}s{held}{grace}')
 
     desired = router.build(
         eligible,
         chain_depth=args.chain_depth,
         call_timeout=args.call_timeout,
-        min_context=args.min_context or None)
+        min_context=args.min_context or None,
+        incumbents=incumbents,
+        incumbent_primary=incumbent_primary,
+        sticky_rel=args.sticky_rel,
+        sticky_abs=args.sticky_abs)
 
     if desired is None:
         emit('ERROR no healthy candidate — leaving config untouched')
         return 1
 
-    aux = config.get('auxiliary')
-    current = (aux or {}).get(args.task)
     changed, reason = router.needs_write(current, desired)
 
     chain_desc = [(e['provider'], e['model']) for e in desired['fallback_chain']]
