@@ -18,6 +18,14 @@ failures are classified:
 
 Recovery is symmetric: a model that was down needs ``promote_streak``
 consecutive passes before it is trusted again.
+
+That guard covers a FAILING model. A second, independent source of churn is a
+HEALTHY one: probe latency on an aggregator swings wildly under changing
+upstream load — the same model measured 1.3s, 6.7s and 42.0s inside twenty
+minutes on one install. Ranking on the latest sample turns that noise into route
+changes, so latency is recorded in a rolling window and ranked on its MEDIAN.
+Median rather than a mean because these are spikes, not drift: one 42s outlier
+in five samples moves a median not at all and a mean by 8s.
 """
 import json
 import os
@@ -43,6 +51,7 @@ DEFAULT_PROBE_TIMEOUT = 45.0
 DEFAULT_DEMOTE_STREAK = 2
 DEFAULT_PROMOTE_STREAK = 2
 DEFAULT_TTL = 600
+DEFAULT_LATENCY_WINDOW = 5
 
 
 def failure_kind(err):
@@ -91,6 +100,42 @@ def probe(base_url, model, api_key, *, timeout=DEFAULT_PROBE_TIMEOUT,
         return False, time.time() - t0, f'HTTP {exc.code} {detail}'
     except Exception as exc:
         return False, time.time() - t0, f'{type(exc).__name__}: {exc}'
+
+
+def record_latency(entry, latency, *, window=DEFAULT_LATENCY_WINDOW):
+    """Append a successful probe to the entry's rolling latency window.
+
+    Only successes are recorded. A failure's elapsed time measures how long the
+    error took to arrive, which is not a latency measurement — mixing the two
+    would let a fast 401 look like a fast model.
+    """
+    entry = dict(entry)
+    samples = entry.get('lat_samples')
+    if not isinstance(samples, list):
+        samples = []
+    samples = [float(s) for s in samples if isinstance(s, (int, float))]
+    samples.append(round(float(latency), 2))
+    entry['lat_samples'] = samples[-window:] if window > 0 else []
+    return entry
+
+
+def median_latency(entry, fallback):
+    """Median of the recorded window, or ``fallback`` when nothing is recorded.
+
+    ``fallback`` is the raw probe latency, so a model on its first ever tick
+    ranks on the only number available. Corrupt or missing windows degrade to
+    the fallback rather than raising — a cache is not a contract.
+    """
+    samples = entry.get('lat_samples') if isinstance(entry, dict) else None
+    if not isinstance(samples, list):
+        samples = []
+    samples = sorted(float(s) for s in samples if isinstance(s, (int, float)))
+    if not samples:
+        return float(fallback)
+    mid = len(samples) // 2
+    if len(samples) % 2:
+        return samples[mid]
+    return (samples[mid - 1] + samples[mid]) / 2.0
 
 
 def apply_verdict(entry, ok, err, *, demote_streak=DEFAULT_DEMOTE_STREAK,
@@ -229,13 +274,16 @@ class HealthCache:
 def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
              demote_streak=DEFAULT_DEMOTE_STREAK,
              promote_streak=DEFAULT_PROMOTE_STREAK,
+             latency_window=DEFAULT_LATENCY_WINDOW,
              context_lookup=None, now=None):
     """Probe (or reuse cached results for) every candidate.
 
     Returns ``(eligible, rejected)``. ``eligible`` entries carry ``ok_now``,
-    ``latency``, ``context`` and ``fail_streak``; ``ok_now`` is False for a
-    model inside its grace period, which callers should use to keep it out of
-    the primary slot.
+    ``latency``, ``lat_median``, ``lat_n``, ``context`` and ``fail_streak``;
+    ``ok_now`` is False for a model inside its grace period, which callers
+    should use to keep it out of the primary slot.
+
+    ``lat_median`` is what the router ranks on — see the module docstring.
     """
     now = time.time() if now is None else now
     eligible, rejected = [], []
@@ -263,6 +311,8 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
             entry = apply_verdict(entry, ok, err,
                                   demote_streak=demote_streak,
                                   promote_streak=promote_streak)
+            if ok:
+                entry = record_latency(entry, latency, window=latency_window)
             entry.update(ok=ok, latency=round(latency, 2), err=err,
                          context=context, ts=now)
             cache.record(base_url, model, entry, provider)
@@ -275,6 +325,8 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
 
         enriched = dict(cand)
         enriched.update(ok_now=bool(ok), latency=latency, context=context,
+                        lat_median=median_latency(entry, latency),
+                        lat_n=len(entry.get('lat_samples') or []),
                         fail_streak=entry.get('fail_streak', 0))
         eligible.append(enriched)
 

@@ -50,26 +50,33 @@ Dry run is the default. Nothing touches your config until you pass `--apply`.
 
 ```console
 $ hermes-aux-autoheal --task compression --verbose
-  ok   ProviderA/swift-flash: tier=0 ctx=1,000,000 probe=0.7s
-  ok   ProviderA/quick-flash: tier=0 ctx=1,048,576 probe=1.4s HELD
-  ok   ProviderB/rapid-mini: tier=0 ctx=1,000,000 probe=2.0s
-  ok   ProviderA/swift-lite: tier=0 ctx=1,000,000 probe=2.5s
-  ok   ProviderB/compact-flash: tier=0 ctx=1,000,000 probe=5.2s HELD
-  ok   ProviderA/legacy-flash: tier=0 ctx=1,000,000 probe=26.1s
-  ok   ProviderB/compact-mini: tier=0 ctx=204,800 probe=2.1s
-  ok   ProviderB/mid-27b: tier=0 ctx=131,072 probe=8.8s
-  ok   ProviderC/general-v5: tier=1 ctx=1,000,000 probe=4.8s HELD
-  ok   ProviderA/general-v2: tier=1 ctx=1,048,576 probe=9.4s
-  ok   ProviderA/general-h3: tier=1 ctx=262,144 probe=1.0s
-  ok   ProviderE/reasoner-xl: tier=2 ctx=1,000,000 probe=3.4s
+  ok   ProviderA/swift-flash: tier=0 ctx=1,000,000 probe=1.7s med=0.9s(n=5) HELD
+  ok   ProviderB/compact-flash: tier=0 ctx=1,000,000 probe=1.3s med=1.3s(n=5)
+  ok   ProviderB/rapid-mini: tier=0 ctx=1,000,000 probe=2.0s med=2.2s(n=5) HELD
+  ok   ProviderA/quick-flash: tier=0 ctx=1,048,576 probe=1.6s med=1.6s(n=5)
+  ok   ProviderA/swift-lite: tier=0 ctx=1,000,000 probe=1.0s med=1.2s(n=5)
+  ok   ProviderA/legacy-flash: tier=0 ctx=1,000,000 probe=20.4s med=3.2s(n=5)
+  ok   ProviderB/compact-mini: tier=0 ctx=204,800 probe=2.2s med=2.2s(n=5)
+  ok   ProviderB/mid-27b: tier=0 ctx=131,072 probe=1.2s med=1.2s(n=5)
+  ok   ProviderA/general-v2: tier=1 ctx=1,048,576 probe=6.8s med=8.6s(n=5)
+  ok   ProviderA/general-h3: tier=1 ctx=262,144 probe=0.8s med=1.5s(n=5)
+  ok   ProviderC/general-v5: tier=2 ctx=1,000,000 probe=2.9s med=3.7s(n=5) HELD
+  ok   ProviderE/reasoner-xl: tier=2 ctx=1,000,000 probe=3.6s med=3.6s(n=5) HELD
 DRY RUN would update compression: primary=ProviderA/swift-flash,
-  chain=[('ProviderB', 'rapid-mini'), ('ProviderC', 'general-v5'),
+  chain=[('ProviderB', 'compact-flash'), ('ProviderC', 'general-v5'),
          ('ProviderE', 'reasoner-xl')] (primary changed)
 re-run with --apply to write it
 ```
 
-`HELD` marks a model already in the route: it is ranked at a discounted latency
-so a challenger has to win by a real margin, not by probe noise. See
+Two columns matter more than the model list.
+
+`med=` is the **median of the last 5 probes**, and it is what ranking uses — not
+`probe=`, the latest one. Look at `legacy-flash`: 20.4s now, 3.2s typically.
+Ranking on the latest sample would drop it several places and rewrite the config;
+ranking on the median leaves it where it belongs.
+
+`HELD` marks a model already in the route. It is compared at a discounted
+latency, so a challenger has to win by a real margin rather than by noise. See
 [Stability](#stability).
 
 With `--apply`, the same run produces this diff:
@@ -115,9 +122,9 @@ including comments, when `ruamel.yaml` is installed — is byte-identical, and a
 timestamped backup is written first.
 
 Two details in that diff are deliberate. The chain crosses to a different
-provider before taking a second model from the primary's own provider. And
-`ProviderD` and `ProviderE` share one `base_url` with different keys, which is
-why the health cache is keyed per provider rather than per endpoint.
+provider before taking a second model from the primary's own provider. And the
+chain holds three *distinct models* — if two providers resold the same model, only
+one of them would get a slot, because both would die together.
 
 Provider and model names throughout this README are placeholders. The
 latencies, context windows, error bodies and orderings are from real runs.
@@ -224,8 +231,9 @@ survive.
 
 ## Stability
 
-Probe-and-write on every tick is unstable in two different ways, and each needs
-its own guard.
+Probe-and-write on every tick is unstable in three different ways, and each
+needs its own guard. On a live install before any of them existed, **130 config
+writes across 245 cron ticks** — 53%.
 
 ### A failing model that keeps recovering
 
@@ -253,16 +261,28 @@ to keep probe traffic down; `--no-cache` forces a fresh probe of everything.
 ### Two healthy models trading places
 
 Failure classification does nothing here, because nothing is failing. Two models
-of the same tier and the same context window, separated only by probe latency
-that swings a few hundred milliseconds, will swap rank almost every tick — and
-each swap is a config write.
+of the same tier and the same context window, separated only by probe latency,
+will swap rank and rewrite the config on almost every tick.
 
-Measured on a live install before this guard existed: **130 config writes across
-245 ticks**, 53%, the primary bouncing between two models that were both
-perfectly healthy.
+The first attempt at this was hysteresis alone: require a challenger to beat an
+incumbent by a margin. It did not work, and the reason is worth stating because
+it is easy to repeat. The margins assumed latency wobbles by a few hundred
+milliseconds. It does not — on an aggregator under changing upstream load, the
+same model measured **1.3s, then 6.7s, then 42.0s inside twenty minutes**. No
+threshold makes a noisy input produce a stable output.
 
-So a model already in the route is compared at a discounted latency, and a
-challenger must beat it by **both** margins:
+So the input is smoothed first. Latency goes into a rolling window
+(`--latency-window`, default 5 successful probes, persisted in the health cache)
+and **ranking reads the median, not the latest sample**. Median rather than a
+mean because these are spikes, not drift: one 42s outlier among five samples
+moves a median not at all and a mean by 8s.
+
+Only successful probes are recorded. A failure's elapsed time measures how long
+the error took to arrive, and mixing the two would let a fast 401 look like a
+fast model.
+
+On top of the smoothed value, an incumbent is compared at a discounted latency,
+and a challenger must beat it by **both** margins:
 
 | flag | default | meaning |
 |------|---------|---------|
@@ -282,6 +302,38 @@ protected by ranking at a discount, so an outsider needs a margin to push a
 member out. The **primary slot** is protected by comparing the leader against
 the incumbent directly, because when both are already in the route the ranking
 discount applies to both sides and cancels out.
+
+### The same model wearing three provider labels
+
+Also invisible to the guards above, because again nothing is failing and nothing
+is even changing — the same models keep rotating through the same slots under
+different names. This was 24 of those 139 writes.
+
+Several providers may resell one model: one shared endpoint, different keys and
+quotas, three entries in `custom_providers`. Giving each its own chain slot is
+false diversity. If the model is retired upstream, all three die in the same
+instant, and the chain that looked three deep was one model.
+
+So the chain takes **one slot per model**, compared on the bare name so
+`vendor/model` and `model` collapse to one entry. The cross-provider rule still
+applies first: a different provider is preferred before backfilling with a
+same-provider spare.
+
+### What it adds up to
+
+On a clean 15-tick cron window with all three guards in place: **1 write, 6.7%**,
+down from 53%. That one write was a legitimate displacement — the challenger was
+41% and 0.9s faster on median, clearing both margins — and the primary held for
+71 minutes, against every 4–5 minutes before.
+
+Fifteen ticks is a small sample, and the honest claim is a direction rather than
+a steady-state number. Verify it on your own install by comparing tick and write
+counts in the log:
+
+```bash
+grep -c 'route sync starting' autoheal.log
+grep -c 'route updated'       autoheal.log
+```
 
 ## Writing config.yaml safely
 
@@ -349,6 +401,7 @@ install ruamel.
 | `--promote-streak` | 2 | passes before a down model is trusted |
 | `--sticky-rel` | 0.30 | fraction faster a challenger must be to displace |
 | `--sticky-abs` | 0.5 | seconds faster it must also be |
+| `--latency-window` | 5 | probes to take the median of when ranking (1 = off) |
 | `--no-cache` | off | probe everything, ignore the cache |
 | `--hermes-path` | `$HERMES_PACKAGE` | Hermes package path, for context windows |
 | `--no-context-lookup` | off | skip context-window resolution |
@@ -385,13 +438,13 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-139 tests, run against both YAML backends — with and without `ruamel.yaml`,
+179 tests, run against both YAML backends — with and without `ruamel.yaml`,
 since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config writer
 suite includes a genuine three-process write race.
 
-Three behaviours worth naming, because they are easy to regress:
+Four behaviours worth naming, because they are easy to regress:
 
 - **Sibling providers are probed separately.** Several providers may share one
   `base_url` (one aggregator, different keys and quotas), so the health cache is
@@ -403,6 +456,9 @@ Three behaviours worth naming, because they are easy to regress:
   silently resets the streak counters and re-enables flapping.
 - **Hysteresis must not become lock-in.** A jitter-sized lead is rejected, but a
   decisive one still wins, and a failing incumbent always loses its slot.
+- **Smoothing must not hide a regression.** A single spike is ignored, but when
+  the median itself moves the model does lose its slot. Smoothing that swallowed
+  real slowdowns would be worse than no smoothing.
 
 ## Changelog
 

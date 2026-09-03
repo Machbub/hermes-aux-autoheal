@@ -69,6 +69,11 @@ DEFAULT_CALL_TIMEOUT = 300
 #     challengers already in the route, which the ranking discount cannot do
 #     (it discounts both sides of that comparison).
 #
+# Both act on the MEDIAN of a probe window, not the latest sample. Latency on an
+# aggregator swings by an order of magnitude tick to tick (measured: 1.3s, 6.7s,
+# 42.0s for one model inside twenty minutes), and no threshold on a noisy input
+# produces a stable output. See ``health.record_latency``.
+#
 # Hysteresis applies to LATENCY only. Tier and context window are stable
 # properties of a model, so a challenger that wins on either takes the slot
 # immediately; there is nothing noisy to smooth out.
@@ -92,6 +97,15 @@ def ident_of(cand):
     return (cand.get('provider'), cand.get('model'))
 
 
+def rank_latency(cand):
+    """The latency a candidate is RANKED on: the median of its probe window.
+
+    Falls back to the latest raw probe when no window has been recorded (first
+    ever tick, or a caller that does not track one).
+    """
+    return cand.get('lat_median', cand.get('latency', 99.0))
+
+
 def beats(challenger, holder, *, sticky_rel=DEFAULT_STICKY_REL,
           sticky_abs=DEFAULT_STICKY_ABS):
     """Is ``challenger`` decisively better than ``holder`` for this job?
@@ -107,9 +121,9 @@ def beats(challenger, holder, *, sticky_rel=DEFAULT_STICKY_REL,
     if c_key != h_key:
         return c_key < h_key
 
-    h_lat = holder.get('latency', 99.0)
+    h_lat = rank_latency(holder)
     threshold = min(h_lat * (1.0 - sticky_rel), h_lat - sticky_abs)
-    return challenger.get('latency', 99.0) <= threshold
+    return rank_latency(challenger) <= threshold
 
 
 def sticky_latency(cand, incumbents, *, sticky_rel=DEFAULT_STICKY_REL,
@@ -118,9 +132,9 @@ def sticky_latency(cand, incumbents, *, sticky_rel=DEFAULT_STICKY_REL,
 
     A model already in the route is credited the displacement margin (the
     tighter of the two, so both must be cleared). Everything else is compared at
-    raw latency.
+    its raw ranking latency.
     """
-    lat = cand.get('latency', 99.0)
+    lat = rank_latency(cand)
     if ident_of(cand) not in incumbents:
         return lat
     return min(lat * (1.0 - sticky_rel), lat - sticky_abs)
@@ -210,22 +224,54 @@ def primary_ident(current):
     return None
 
 
+def model_id(cand):
+    """Identity of the MODEL behind a candidate, ignoring who resells it.
+
+    Compared on the bare name, so ``vendor/model`` from one aggregator and
+    ``model`` from another collapse to the same identity.
+    """
+    return (cand.get('model') or '').rsplit('/', 1)[-1].lower()
+
+
 def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH):
-    """Fallbacks that survive the failure the primary just had."""
+    """Fallbacks that survive the failure the primary just had.
+
+    Two rules, both about not putting the same failure in the chain twice:
+
+    1. **One slot per MODEL.** Several providers may resell the identical model
+       under different labels — one shared endpoint, different keys and quotas.
+       Treating those as distinct fallbacks is false diversity: if the model is
+       retired upstream, every label dies in the same instant. It also churns the
+       config; on one install 24 of 139 writes were nothing but three labels for
+       one model rotating through the same slots.
+    2. **Cross provider before backfilling.** A chain made only of one
+       provider's models dies wholesale when the provider or its key is what
+       broke — the orphaned-provider case this tool exists to survive.
+    """
     seen_providers = {primary['provider']}
+    seen_models = {model_id(primary)}
     chain = []
     rest = [c for c in ordered if c is not primary]
+
+    # pass 1: a new provider AND a new model
     for c in rest:
         if len(chain) >= depth:
             break
-        if c['provider'] not in seen_providers:
-            seen_providers.add(c['provider'])
-            chain.append(c)
+        if c['provider'] in seen_providers or model_id(c) in seen_models:
+            continue
+        seen_providers.add(c['provider'])
+        seen_models.add(model_id(c))
+        chain.append(c)
+
+    # pass 2: backfill with same-provider spares, still one slot per model
     for c in rest:
         if len(chain) >= depth:
             break
-        if c not in chain:
-            chain.append(c)
+        if model_id(c) in seen_models:
+            continue
+        seen_models.add(model_id(c))
+        chain.append(c)
+
     return chain
 
 
