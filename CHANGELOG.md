@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-09-04
+
+The chat chain shipped in 0.6.0 was dead on arrival as *behaviour*: the
+`pick_chat_chain` family lived in the router but the CLI never called it, so
+`--apply` maintained only `auxiliary.*` routes and never touched top-level
+`fallback_providers` — the chat model kept its stale chain no matter how many
+probes failed. The logic was unit-tested; nothing wired it to a real config.
+
+- **CLI wiring**: `--apply` now reads `model.provider`/`model.default`,
+  picks the chat chain from the same probe results, and writes
+  `fallback_providers` in the same transaction as the auxiliary route.
+  `model.*` is never rewritten — the user's chat choice stays.
+- New `--chat-depth` flag (default `DEFAULT_CHAT_CHAIN_DEPTH` = 4).
+- Chat chain obeys the same write gate: a correct chain produces zero output,
+  a stale one is healed, dry runs report without writing.
+- 4 new CLI tests (17 CLI total; 275 overall).
+
 ## [0.6.0] — 2026-09-04
 
 A second, different fallback chain: this time for the CHAT model, not the
