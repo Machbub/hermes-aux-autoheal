@@ -62,6 +62,9 @@ def build_parser():
     p.add_argument('--sticky-abs', type=float, default=router.DEFAULT_STICKY_ABS,
                    help='seconds faster a challenger must also be, in absolute '
                         'terms (0 disables)')
+    p.add_argument('--latency-window', type=int, default=health.DEFAULT_LATENCY_WINDOW,
+                   help='rank on the median of this many recent probes rather '
+                        'than the latest one (1 disables smoothing)')
     p.add_argument('--cache',
                    help='health cache path (default: $HERMES_HOME/.aux_autoheal_health.json)')
     p.add_argument('--no-cache', action='store_true',
@@ -133,6 +136,7 @@ def main(argv=None):
         timeout=args.probe_timeout,
         demote_streak=args.demote_streak,
         promote_streak=args.promote_streak,
+        latency_window=args.latency_window,
         context_lookup=ctx_lookup)
     cache.save()
 
@@ -148,10 +152,12 @@ def main(argv=None):
                          sticky_rel=args.sticky_rel, sticky_abs=args.sticky_abs):
         grace = '' if c['ok_now'] else f' GRACE(strike {c["fail_streak"]}/{args.demote_streak})'
         held = ' HELD' if (c['provider'], c['model']) in incumbents else ''
+        med = c.get('lat_median', c.get('latency', 99.0))
+        n = c.get('lat_n', 0)
         ctx = f'{c["context"]:,}' if c.get('context') else 'unknown'
         vprint(f'  ok   {c["provider"]}/{c["model"]}: '
                f'tier={router.tier_of(c["model"])} ctx={ctx} '
-               f'probe={c["latency"]:.1f}s{held}{grace}')
+               f'probe={c["latency"]:.1f}s med={med:.1f}s(n={n}){held}{grace}')
 
     desired = router.build(
         eligible,

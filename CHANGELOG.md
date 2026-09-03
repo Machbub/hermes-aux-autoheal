@@ -5,6 +5,66 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-09-03
+
+Ranking hysteresis (0.2.0) was calibrated for the wrong magnitude of noise. On a
+live install the write rate did not fall — it sat at 53% before the guard and
+67% over the 15 ticks after it. The assumption behind the 30% / 0.5s margins was
+that probe latency wobbles by a few hundred milliseconds. It does not: the same
+model measured 1.3s, then 6.7s, then 42.0s inside twenty minutes on an
+aggregator under changing upstream load.
+
+No threshold fixes a noisy input, so this release smooths the input instead, and
+fixes a second churn source that hysteresis never touched.
+
+Measured after both changes, on a clean 15-tick cron window: **6.7%** write rate
+(1 of 15), and that one write was a legitimate displacement — the challenger was
+41% and 0.9s faster on median, clearing both margins. The primary held for 71
+minutes, against every 4–5 minutes before.
+
+### Added
+
+- **Median latency ranking.** `health.record_latency()` keeps a rolling window
+  of the last N successful probes in the health cache; `health.median_latency()`
+  reduces it. `router.rank_latency()` is what ranking, `sticky_latency()` and
+  `beats()` now read. Window size is `--latency-window` (default 5; `1` disables
+  smoothing).
+
+  Median rather than a mean because these are spikes, not drift: one 42s outlier
+  among five samples moves a median not at all and a mean by 8s.
+
+  Only successful probes are recorded. A failure's elapsed time measures how
+  long the error took to arrive, and mixing the two would let a fast 401 look
+  like a fast model.
+
+- **One chain slot per model** (`router.model_id()`, rewritten
+  `router.pick_chain()`). Several providers may resell the identical model under
+  different labels — one shared endpoint, different keys and quotas. Treating
+  those as distinct fallbacks is false diversity: when the model is retired
+  upstream, every label dies in the same instant. It was also 24 of 139 observed
+  writes, which were nothing but three labels for one model rotating through the
+  same slots.
+
+  Identity is the bare model name, so `vendor/model` from one aggregator and
+  `model` from another collapse to one entry. The cross-provider rule from 0.1.0
+  still applies first.
+
+- 40 tests (`tests/test_latency_smoothing.py`), including that smoothing does
+  not hide a real regression, that `beats()` compares medians rather than latest
+  probes, and that a sibling-label reshuffle no longer produces a write.
+
+### Changed
+
+- `health.evaluate()` emits `lat_median` and `lat_n` on each eligible candidate
+  and accepts `latency_window`.
+- `--verbose` prints `med=<median>s(n=<samples>)` next to the raw probe time, so
+  a spike is visible as a spike rather than as a route change.
+
+### Fixed
+
+- `beats()` and `sticky_latency()` compared raw `latency`, which meant a single
+  slow probe could displace a model whose typical latency was far better.
+
 ## [0.2.0] — 2026-09-03
 
 ### Added
@@ -95,5 +155,6 @@ Initial release.
   provider, siblings on a shared endpoint collided and one sibling's verdict was
   read back as every sibling's, so a dead key could look alive.
 
+[0.3.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Machbub/hermes-aux-autoheal/releases/tag/v0.1.0
