@@ -309,3 +309,102 @@ def test_missing_config_is_reported(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert rc == 2
     assert 'config not found' in err
+
+
+def test_apply_heals_dead_chat_fallback_chain(home, monkeypatch, capsys):
+    """The v0.6.0 wiring: --apply must also maintain fallback_providers.
+
+    Seeded with dead entries (the pre-fix state: the tool never touched the
+    top-level chat list). After apply the chain must be healthy, and
+    model.provider/model.default — the user's choice — must be untouched.
+    """
+    # seed a stale chat chain pointing at dead models
+    text = (home / 'config.yaml').read_text()
+    stale = ('fallback_providers:\n'
+             '  - provider: Dead\n'
+             '    model: dead-model\n'
+             '    base_url: https://dead.example/v1\n'
+             '    key_env: DEAD_API_KEY\n'
+             '    api_mode: chat_completions\n')
+    (home / 'config.yaml').write_text(text + stale)
+
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'beta-mini'}))
+    rc = cli.main(['--task', 'compression', '--apply'])
+    out = capsys.readouterr().out
+    cfg = read_cfg(home)
+
+    assert rc == 0
+    assert 'chat fallback_providers' in out, \
+        'apply must report the chat chain write'
+    chain = cfg['fallback_providers']
+    assert isinstance(chain, list) and chain, 'fallback_providers must exist'
+    models = {(e['provider'], e['model']) for e in chain}
+    assert ('Dead', 'dead-model') not in models
+    assert models <= {('Alpha', 'alpha-flash'), ('Beta', 'beta-mini')}
+    for entry in chain:
+        assert entry['base_url'] and entry['key_env'] and entry['api_mode'], \
+            'written chat entries must resolve without the dashboard'
+
+    # the user's chat choice is never rewritten
+    assert cfg['model']['provider'] == 'Alpha'
+    assert cfg['model']['default'] == 'alpha-chat'
+
+
+def test_chat_chain_dry_run_does_not_write(home, monkeypatch, capsys):
+    (home / 'config.yaml').write_text(
+        (home / 'config.yaml').read_text()
+        + ('fallback_providers:\n'
+           '  - provider: Dead\n'
+           '    model: dead-model\n'
+           '    base_url: https://dead.example/v1\n'
+           '    key_env: DEAD_API_KEY\n'
+           '    api_mode: chat_completions\n'))
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'beta-mini'}))
+
+    rc = cli.main(['--task', 'compression'])
+    out = capsys.readouterr().out
+    cfg = read_cfg(home)
+
+    assert rc == 0
+    assert 'DRY RUN' in out and 'chat fallback_providers' in out
+    assert cfg['fallback_providers'][0]['model'] == 'dead-model', \
+        'dry run must not rewrite the chat chain'
+
+
+def test_chat_chain_second_run_is_a_noop(home, monkeypatch, capsys):
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'beta-mini'}))
+    cli.main(['--task', 'compression', '--apply'])
+    capsys.readouterr()
+    mtime = os.stat(home / 'config.yaml').st_mtime_ns
+
+    rc = cli.main(['--task', 'compression', '--apply'])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out.strip() == '', 'a correct chat chain must produce no output'
+    assert os.stat(home / 'config.yaml').st_mtime_ns == mtime
+
+
+def test_chat_chain_skipped_without_model_default(home, monkeypatch, capsys):
+    """No model.provider/model.default → the chat chain is left alone."""
+    import re
+    text = (home / 'config.yaml').read_text()
+    # drop only the top-level model: block (it precedes custom_providers,
+    # which must survive — removing it would kill every candidate)
+    no_model = re.sub(r'(?m)^model:.*?(?=^custom_providers:)',
+                      '', text, flags=re.S)
+    assert not re.search(r'(?m)^model:', no_model), 'top-level model block must be gone'
+    assert 'custom_providers:' in no_model
+    (home / 'config.yaml').write_text(no_model)
+
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'beta-mini'}))
+    rc = cli.main(['--task', 'compression', '--apply', '--verbose'])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert 'skip chat chain' in out
+    assert 'fallback_providers' not in read_cfg(home)

@@ -317,6 +317,11 @@ capped at `depth // 2`, across origins too: the cap protects against one model
 filling the chain, regardless of how many hosts resell it. Slot stickiness is
 the same latency-blind guard as the compression chain.
 
+The CLI applies it: `--apply` writes `fallback_providers` (top-level) in the
+same transaction as the auxiliary route, reading the chat primary from
+`model.provider` / `model.default` — which it never rewrites. `--chat-depth`
+sets the chain length.
+
 ## Stability
 
 Probe-and-write on every tick is unstable in four different ways, and each needs

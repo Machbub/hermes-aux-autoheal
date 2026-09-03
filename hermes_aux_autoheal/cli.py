@@ -50,6 +50,9 @@ def build_parser():
                         f'(default: {discovery.DEFAULT_MAX_DISCOVERED})')
     p.add_argument('--chain-depth', type=int, default=router.DEFAULT_CHAIN_DEPTH,
                    help=f'fallback entries to keep (default: {router.DEFAULT_CHAIN_DEPTH})')
+    p.add_argument('--chat-depth', type=int, default=router.DEFAULT_CHAT_CHAIN_DEPTH,
+                   help='entries to keep in the CHAT model\'s fallback_providers '
+                        f'(default: {router.DEFAULT_CHAT_CHAIN_DEPTH})')
     p.add_argument('--call-timeout', type=int, default=router.DEFAULT_CALL_TIMEOUT,
                    help='per-entry timeout written into the route, seconds')
     p.add_argument('--probe-timeout', type=float,
@@ -186,14 +189,42 @@ def main(argv=None):
 
     changed, reason = router.needs_write(current, desired)
 
+    # --- the CHAT model's own fallback list (top-level fallback_providers) ---
+    # model.provider/model.default are the user's choice and are NEVER written
+    # here; this only maintains the spares behind them. Same probe results, same
+    # stickiness guard, different ranking (chat_slot_key, not tier_of).
+    chat_changed, chat_reason = False, ''
+    chat_desc = None
+    chat_desired = None
+    model_cfg = config.get('model') or {}
+    chat_primary = (model_cfg.get('provider'), model_cfg.get('default'))
+    if chat_primary[0] and chat_primary[1]:
+        chat_current = config.get('fallback_providers')
+        chat_incumbent = tuple(chat_current) if isinstance(chat_current, list) else ()
+        chat_chain = router.pick_chat_chain(
+            eligible, chat_primary,
+            depth=args.chat_depth,
+            incumbent_chain=chat_incumbent)
+        chat_desc = [(c['provider'], c['model']) for c in chat_chain]
+        chat_desired = [router.as_chat_entry(c) for c in chat_chain]
+        chat_changed, chat_reason = router.chat_chain_needs_write(
+            chat_current, chat_desired)
+    else:
+        vprint('skip chat chain: model.provider / model.default not set')
+
     chain_desc = [(e['provider'], e['model']) for e in desired['fallback_chain']]
-    if not changed:
+    if not changed and not chat_changed:
         vprint(f'route already correct: {desired["provider"]}/{desired["model"]} '
                f'+ {len(chain_desc)} fallback(s)')
+        if chat_desc is not None:
+            vprint(f'chat chain already correct: {len(chat_desc)} fallback(s)')
         return 0
 
     plan = (f'{args.task}: primary={desired["provider"]}/{desired["model"]}, '
             f'chain={chain_desc} ({reason})')
+
+    if chat_changed:
+        plan += (f'\n  chat fallback_providers={chat_desc} ({chat_reason})')
 
     if not args.apply:
         emit(f'DRY RUN would update {plan}')
@@ -210,6 +241,9 @@ def main(argv=None):
             task_cfg['timeout'] = desired['timeout']
             config_io.replace_seq(task_cfg, 'fallback_chain',
                                   desired['fallback_chain'])
+            if chat_changed:
+                config_io.replace_seq(tx.doc, 'fallback_providers',
+                                      chat_desired)
     except config_io.ConfigConflict as exc:
         emit(f'SKIP another writer holds config.yaml ({exc})')
         return 2
