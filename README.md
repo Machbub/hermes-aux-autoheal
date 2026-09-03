@@ -300,6 +300,23 @@ primary's provider. A chain of one provider's models dies wholesale when the
 provider or its key is what broke — the exact failure this tool exists to
 survive.
 
+### The chat chain is ranked differently on purpose
+
+The compression rules are wrong for the chat model (`model.default` +
+`fallback_providers`), and the first live sync proved it: `tier_of` put a
+cheap flash model (tier 0) ahead of a spare key for the user's own flagship
+model (tier 2) — a capability downgrade offered before a like-for-like
+replacement.
+
+`pick_chat_chain` / `chat_slot_key` rank by *closeness to what the user
+chose*: the identical model behind another key first (covers key/quota death,
+capability unchanged), then tier distance from the primary, then widest
+context. Origin diversity is its own pass — a dead origin (Cloudflare 522)
+takes every key on it, so the chain must leave the host. Same-model spares are
+capped at `depth // 2`, across origins too: the cap protects against one model
+filling the chain, regardless of how many hosts resell it. Slot stickiness is
+the same latency-blind guard as the compression chain.
+
 ## Stability
 
 Probe-and-write on every tick is unstable in four different ways, and each needs

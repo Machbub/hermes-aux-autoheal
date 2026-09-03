@@ -54,6 +54,7 @@ def set_patterns(fast=None, heavy=None):
 
 DEFAULT_CHAIN_DEPTH = 3
 DEFAULT_CALL_TIMEOUT = 300
+DEFAULT_CHAT_CHAIN_DEPTH = 4
 
 # Ranking hysteresis. The health state machine keeps a FAILING model from
 # flapping; these keep two HEALTHY models from trading places. Measured on a
@@ -362,6 +363,170 @@ def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH, incumbent_chain=()):
     return chain
 
 
+def chat_slot_key(cand, primary_model, primary_tier):
+    """Ordering key for a CHAT fallback slot. NOT the same as tier ordering.
+
+    ``tier_of`` exists for compression, where a cheap fast model is genuinely the
+    better pick — tier 0 (flash/mini/lite) sorts first. Applying that to the chat
+    chain is backwards, and it showed up immediately on the live install: the
+    first sync put a cheap flash model ahead of a spare key for the user's own
+    flagship model, because flash is tier 0 and the flagship is tier 2. For chat
+    that is a capability downgrade offered before a like-for-like replacement.
+
+    So rank by CLOSENESS to what the user actually chose:
+
+    1. the identical model behind another key — same capability, no surprise
+    2. tier distance from the primary — a peer before a downgrade
+    3. widest context window
+
+    Latency is absent on purpose, the same reason it is absent from
+    :func:`outranks_for_slot`.
+    """
+    return (0 if model_id(cand) == primary_model else 1,
+            abs(tier_of(cand['model']) - primary_tier),
+            -min(cand.get('context') or 0, 1_000_000))
+
+
+def outranks_for_chat_slot(challenger, holder, primary_model, primary_tier):
+    """Chat-chain equivalent of :func:`outranks_for_slot`, blind to latency."""
+    return (chat_slot_key(challenger, primary_model, primary_tier)
+            < chat_slot_key(holder, primary_model, primary_tier))
+
+
+def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
+    """Choose the CHAT model's fallbacks (top-level ``fallback_providers``).
+
+    Deliberately NOT :func:`pick_chain`. That function dedupes by model, because
+    for compression three labels reselling one model are false diversity — if the
+    model dies upstream all three die together.
+
+    For chat the dominant failure observed on this install is different. In one
+    afternoon: ``balance=0`` on two bai models (key exhausted), ``429 model quota
+    is temporarily paused`` on MiniMax-M3 (model throttled), and a Cloudflare 522
+    (origin unreachable). Those are three distinct failures and they need three
+    distinct kinds of spare:
+
+    1. **Same model, different key.** Covers the key/quota death, which is the
+       most frequent. Capability is identical, so this is the cheapest possible
+       degradation. Capped at ``depth // 2`` slots so keys on one origin cannot
+       fill the whole chain.
+    2. **Different origin.** Covers the 522 — a dead origin takes every key on
+       it, so a chain of one host protects against nothing.
+    3. **Backfill**, one slot per model, for whatever depth remains.
+
+    Slot stickiness is the same idea as the compression chain
+    (blind to latency) but ranked by :func:`chat_slot_key`, not ``tier_of``
+    directly — for chat a same-tier peer beats a cheap tier-0 model, which is the
+    opposite of what compression wants.
+
+    ``chat_primary`` is the ``(provider, model)`` from ``model.default`` and is
+    never placed in its own fallback list.
+    """
+
+    def ident(c):
+        return (c.get('provider'), c.get('model'))
+
+    def origin(c):
+        return (c.get('base_url') or '').split('//')[-1].split('/')[0].lower()
+
+    primary_ident = tuple(chat_primary)
+    primary_model = primary_ident[1].rsplit('/', 1)[-1].lower()
+
+    # The primary's own tier and origin, when it is in the pool. Cross-origin
+    # means "not this host", so an unknown primary origin makes every host cross.
+    primary_tier = tier_of(primary_ident[1])
+    primary_origin = ''
+    for c in ordered:
+        if ident(c) == primary_ident:
+            primary_origin = origin(c)
+            break
+
+    # Sort by CHAT slot quality rather than trusting the caller's ordering.
+    # pick_chain gets away with relying on rank()'s output; this function must
+    # not, for two measured reasons:
+    #   * rank() sorts tier 0 first (right for compression, backwards for chat —
+    #     it offered a flash model ahead of a spare flagship key)
+    #   * later passes here can re-take a holder that pass 0 deliberately
+    #     rejected, so the challenger set has to already be in slot order
+    # Failing candidates go last, same reason rank() does it: Hermes stops
+    # walking the chain at the first entry that errors, so a suspect entry at
+    # position 0 costs a request. Ties keep the caller's latency order (stable).
+    rest = sorted(
+        (c for c in ordered if ident(c) != primary_ident),
+        key=lambda c: ((0 if c.get('ok_now', True) else 1,)
+                       + chat_slot_key(c, primary_model, primary_tier)))
+
+    chain = []
+    taken = set()
+
+    def take(cand):
+        taken.add(ident(cand))
+        chain.append(cand)
+
+    # pass 0: defend what is already on disk (same rule as the compression chain)
+    if incumbent_chain:
+        by_ident = {ident(c): c for c in rest}
+        held = {ident(e) for e in incumbent_chain}
+        for entry in incumbent_chain:
+            if len(chain) >= depth:
+                break
+            holder = by_ident.get(ident(entry))
+            if holder is None:
+                continue                        # left the pool: retired/down
+            if not holder.get('ok_now', True):
+                continue                        # in grace: must not hold a slot
+            if ident(holder) in taken:
+                continue
+            if any(outranks_for_chat_slot(c, holder, primary_model, primary_tier)
+                   for c in rest
+                   if ident(c) not in held
+                   and ident(c) not in taken
+                   and c.get('ok_now', True)):
+                continue
+            take(holder)
+
+    # pass 1: identical model behind a different key (covers key/quota death)
+    same_model_cap = max(1, depth // 2)
+    same_model_used = sum(
+        1 for c in chain if model_id(c) == primary_model)
+    for c in rest:
+        if len(chain) >= depth or same_model_used >= same_model_cap:
+            break
+        if ident(c) in taken or model_id(c) != primary_model:
+            continue
+        take(c)
+        same_model_used += 1
+
+    # pass 2: a different origin (covers the 522 — a dead host takes all its keys)
+    seen_origins = {primary_origin} | {origin(c) for c in chain}
+    for c in rest:
+        if len(chain) >= depth:
+            break
+        if ident(c) in taken or origin(c) in seen_origins:
+            continue
+        # A same-model spare on a NEW origin still counts against the same-model
+        # cap: the cap exists so one MODEL cannot fill the chain, regardless of
+        # how many hosts happen to resell it.
+        if (model_id(c) == primary_model and same_model_used >= same_model_cap):
+            continue
+        seen_origins.add(origin(c))
+        take(c)
+        if model_id(c) == primary_model:
+            same_model_used += 1
+
+    # pass 3: backfill, one slot per model
+    seen_models = {primary_model} | {model_id(c) for c in chain}
+    for c in rest:
+        if len(chain) >= depth:
+            break
+        if ident(c) in taken or model_id(c) in seen_models:
+            continue
+        seen_models.add(model_id(c))
+        take(c)
+
+    return chain
+
+
 def as_entry(cand, *, timeout=DEFAULT_CALL_TIMEOUT):
     """One ``fallback_chain`` entry in the shape Hermes reads."""
     return {
@@ -372,6 +537,45 @@ def as_entry(cand, *, timeout=DEFAULT_CALL_TIMEOUT):
         'api_mode': cand.get('api_mode') or 'chat_completions',
         'timeout': timeout,
     }
+
+
+def as_chat_entry(cand):
+    """One top-level ``fallback_providers`` entry in the shape Hermes reads.
+
+    No ``timeout``: the chat chain is resolved per call through the gateway's
+    fallback config, which has no per-entry timeout knob. ``base_url`` /
+    ``key_env`` are carried so a bare config file still resolves without the
+    dashboard; the gateway also re-derives them from ``custom_providers``.
+    """
+    return {
+        'provider': cand['provider'],
+        'model': cand['model'],
+        'base_url': cand['base_url'],
+        'key_env': cand['key_env'],
+        'api_mode': cand.get('api_mode') or 'chat_completions',
+    }
+
+
+def chat_chain_needs_write(current, desired):
+    """``(bool, reason)`` — is the on-disk chat chain materially different?
+
+    Same tail-churn policy as :func:`needs_write`: a write happens when the
+    membership changes or when the FIRST entry changes (the one Hermes tries
+    first). Reordering the tail is not worth a write.
+    """
+    if not isinstance(current, (list, tuple)):
+        return True, 'chat chain missing'
+    if len(current) != len(desired):
+        return True, 'chat chain length changed'
+
+    def ident(e):
+        return (e.get('provider'), e.get('model')) if isinstance(e, dict) else (None, None)
+
+    if {ident(e) for e in current} != {ident(e) for e in desired}:
+        return True, 'chat chain members changed'
+    if current and ident(current[0]) != ident(desired[0]):
+        return True, 'chat chain[0] changed'
+    return False, 'equivalent'
 
 
 def build(eligible, *, chain_depth=DEFAULT_CHAIN_DEPTH,
