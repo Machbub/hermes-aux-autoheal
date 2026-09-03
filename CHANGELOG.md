@@ -5,6 +5,58 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-09-03
+
+The third churn source, found the same way as the first two: by measuring the
+live install instead of trusting the previous fix. Median ranking (0.3.0) cut the
+write rate from 53% to roughly 11%, and the primary held steady for hours. The
+remaining writes were almost all the same event — two models trading one
+fallback slot.
+
+Over 6.5 hours: 12 writes, 9 of them pure chain reorders. The two models
+involved were the same tier, both advertising a 1M context window, with medians
+crossing every few ticks (2.1s vs 6.8s, then the reverse). Nothing about which
+models were reachable changed; the file was rewritten to say the same thing in a
+different order.
+
+`choose_primary` had a stickiness guard. `pick_chain` had none — it re-picked
+from a fresh ranking every tick, so any crossing evicted the incumbent.
+
+### Added
+
+- **Chain slot stickiness.** `pick_chain` accepts the chain currently on disk
+  (`incumbent_chain`, from the new `router.chain_entries()`) and defends each
+  slot: a holder keeps its position unless a challenger out-ranks it on tier or
+  context window.
+- `router.outranks_for_slot()` — the displacement bar for chain slots,
+  deliberately **blind to latency**. A fallback exists to answer when the
+  primary stops answering, and tier plus context decide whether it can; probe
+  latency is the one input too noisy to act on. Replaying the 99 real ticks:
+  defending slots on latency with the standard hysteresis margins still allowed
+  6 swaps, and only an absurd 5s absolute margin reached zero — which would also
+  block genuine failovers. Defending on tier and context allowed 0.
+- 24 tests (`tests/test_chain_stickiness.py`), covering both directions of the
+  observed crossing plus every case where a holder must still lose its slot.
+
+### Changed
+
+- Latency keeps its old job of ordering candidates for an **empty** slot. It no
+  longer evicts an incumbent from an occupied one.
+- A holder is not defended when it has left the eligible pool (retired, down,
+  demoted) or failed its latest probe — `ok_now` false must never sit at
+  `chain[0]`, since Hermes stops walking the chain at the first entry that
+  errors mid-request.
+
+### Verified
+
+Replaying the real log through both code paths, 100 ticks where both contenders
+were alive: **6 writes before, 0 after**. Full suite 256 tests.
+
+Rules 1 and 2 still outrank stickiness: two labels for one model take one slot,
+and cross-provider placement still comes before same-provider backfill. A holder
+that pass 0 declines to defend can still be re-selected in pass 1 — same chain,
+so no write.
+
 ## [0.4.0] — 2026-09-03
 
 Discovery only read models pinned by hand in `config.yaml`. That matched one kind
@@ -206,6 +258,7 @@ Initial release.
   provider, siblings on a shared endpoint collided and one sibling's verdict was
   read back as every sibling's, so a dead key could look alive.
 
+[0.5.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.1.0...v0.2.0

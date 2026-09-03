@@ -156,6 +156,7 @@ def main(argv=None):
     current = (aux or {}).get(args.task)
     incumbents = router.route_idents(current)
     incumbent_primary = router.primary_ident(current)
+    incumbent_chain = router.chain_entries(current)
 
     for c in router.rank(eligible, incumbents,
                          sticky_rel=args.sticky_rel, sticky_abs=args.sticky_abs):
@@ -175,6 +176,7 @@ def main(argv=None):
         min_context=args.min_context or None,
         incumbents=incumbents,
         incumbent_primary=incumbent_primary,
+        incumbent_chain=incumbent_chain,
         sticky_rel=args.sticky_rel,
         sticky_abs=args.sticky_abs)
 

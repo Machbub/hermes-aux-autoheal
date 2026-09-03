@@ -302,9 +302,9 @@ survive.
 
 ## Stability
 
-Probe-and-write on every tick is unstable in three different ways, and each
-needs its own guard. On a live install before any of them existed, **130 config
-writes across 245 cron ticks** — 53%.
+Probe-and-write on every tick is unstable in four different ways, and each needs
+its own guard. On a live install before any of them existed, **130 config writes
+across 245 cron ticks** — 53%.
 
 ### A failing model that keeps recovering
 
@@ -390,20 +390,77 @@ So the chain takes **one slot per model**, compared on the bare name so
 applies first: a different provider is preferred before backfilling with a
 same-provider spare.
 
+### Two healthy models trading one slot
+
+The three guards above left the primary stable for hours and cut writes to
+roughly 11% — and then almost every remaining write turned out to be the same
+event. Over one 6.5-hour window: **12 writes, 9 of them pure chain reorders.**
+The two models involved were the same tier, both advertising a 1M context
+window, medians crossing every few ticks (2.1s vs 6.8s, then the reverse). The
+route was rewritten to say the same thing in a different order.
+
+`choose_primary` had a stickiness guard. `pick_chain` did not — it re-picked from
+a fresh ranking every tick, so any crossing evicted the incumbent.
+
+A chain slot now defends itself: the holder keeps its position unless a
+challenger out-ranks it on **tier or context window**. Latency is deliberately
+excluded. A fallback is not there to be fast, it is there to answer when the
+primary stops answering, and latency is the one input too noisy to act on — the
+same model measured 1.3s, 6.7s and 42.0s inside twenty minutes.
+
+Replaying the 99 real ticks of that pair:
+
+| Slot defence | Swaps |
+|---|---|
+| none (0.4.0) | 6 |
+| latency, 30% + 0.5s margins | 6 |
+| latency, 30% + 2.0s margins | 4 |
+| latency, 30% + 5.0s margins | 0 |
+| tier and context only | 0 |
+
+Only an absurd 5-second absolute margin reached zero on latency, and that would
+also block genuine failovers. Tier and context reached zero while still yielding
+instantly to a better-suited model.
+
+Latency keeps its old job: ordering candidates that compete for an **empty**
+slot. It no longer evicts an incumbent from an occupied one.
+
 ### What it adds up to
 
-On a clean 15-tick cron window with all three guards in place: **1 write, 6.7%**,
-down from 53%. That one write was a legitimate displacement — the challenger was
-41% and 0.9s faster on median, clearing both margins — and the primary held for
-71 minutes, against every 4–5 minutes before.
+Each guard was measured on the install it was written for, and the numbers moved
+as the window grew — which is the point of quoting the window instead of a single
+headline figure:
 
-Fifteen ticks is a small sample, and the honest claim is a direction rather than
-a steady-state number. Verify it on your own install by comparing tick and write
-counts in the log:
+| Window | Ticks | Writes | Rate |
+|---|---|---|---|
+| before any guard | 245 | 130 | 53% |
+| hysteresis alone (0.2.0) | 66 | 44 | 67% |
+| median ranking, first hour (0.3.0) | 15 | 1 | 6.7% |
+| median ranking, 6.5h (0.4.0) | 93 | 10 | 10.8% |
+| chain defence, replayed on that same 6.5h (0.5.0) | 100 | 0 | 0% |
+
+Two things worth reading carefully. Hysteresis alone made churn **worse** — the
+margins were calibrated for noise an order of magnitude smaller than the real
+thing. And the 6.7% figure was real but flattering: a longer window put the same
+code at 10.8%, because rarer crossings need time to show up.
+
+The last row is a replay, not a fresh observation: the recorded medians from that
+window pushed back through both code paths. It counts writes avoided on the
+contending pair, and it does not prove a steady state — only that every write in
+that window came from a cause the new guard removes.
+
+Verify it on your own install by comparing tick and write counts in the log:
 
 ```bash
 grep -c 'route sync starting' autoheal.log
 grep -c 'route updated'       autoheal.log
+```
+
+And check *why* it wrote, which is the part that tells you whether the route
+actually changed or merely got reordered:
+
+```bash
+grep -o 'route updated ([^)]*)' autoheal.log | sort | uniq -c | sort -rn
 ```
 
 ## Writing config.yaml safely
@@ -517,13 +574,13 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-232 tests, run against both YAML backends — with and without `ruamel.yaml`,
+256 tests, run against both YAML backends — with and without `ruamel.yaml`,
 since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config writer
 suite includes a genuine three-process write race.
 
-Five behaviours worth naming, because they are easy to regress:
+Six behaviours worth naming, because they are easy to regress:
 
 - **Sibling providers are probed separately.** Several providers may share one
   `base_url` (one aggregator, different keys and quotas), so the health cache is
@@ -541,6 +598,10 @@ Five behaviours worth naming, because they are easy to regress:
 - **A pinned model is never re-listed, and a keyless provider is never
   contacted.** Discovery spends a listing request only where it has nothing to
   go on and a key to go with it.
+- **A chain slot holder is not evicted by latency.** Both directions of a real
+  median crossing are pinned, because a guard that only holds in the ordering it
+  was written against is not a guard. A holder still loses its slot to a better
+  tier or a wider context window, and always loses it when it fails a probe.
 
 ## Changelog
 
