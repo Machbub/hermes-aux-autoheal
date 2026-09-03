@@ -41,6 +41,13 @@ def build_parser():
                    help='path to .env for API keys (default: $HERMES_HOME/.env)')
     p.add_argument('--sqlite-db',
                    help='optional dashboard SQLite db to also read providers from')
+    p.add_argument('--no-discover-models', action='store_true',
+                   help='do not ask providers for their /v1/models listing; '
+                        'use only models pinned in config.yaml')
+    p.add_argument('--max-discovered', type=int,
+                   default=discovery.DEFAULT_MAX_DISCOVERED,
+                   help='cap on models taken from one provider listing '
+                        f'(default: {discovery.DEFAULT_MAX_DISCOVERED})')
     p.add_argument('--chain-depth', type=int, default=router.DEFAULT_CHAIN_DEPTH,
                    help=f'fallback entries to keep (default: {router.DEFAULT_CHAIN_DEPTH})')
     p.add_argument('--call-timeout', type=int, default=router.DEFAULT_CALL_TIMEOUT,
@@ -117,7 +124,9 @@ def main(argv=None):
         config, _ = config_io.parse(f.read())
 
     candidates, skipped = discovery.discover(
-        config, sqlite_db=args.sqlite_db, env_file=env_file)
+        config, sqlite_db=args.sqlite_db, env_file=env_file,
+        discover_models=not args.no_discover_models,
+        max_discovered=args.max_discovered)
     for cand, why in skipped:
         vprint(f'  skip {cand["provider"]}/{cand["model"]}: {why}')
 

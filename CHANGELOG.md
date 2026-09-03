@@ -5,6 +5,57 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-09-03
+
+Discovery only read models pinned by hand in `config.yaml`. That matched one kind
+of install and silently failed the other: a relay or gateway fronting dozens of
+upstreams is configured as **one** provider entry with `discover_models: true`,
+and nobody enumerates sixty models by hand. Such a config produced zero
+candidates and the tool exited with `no candidate models with usable API keys` —
+correct message, useless outcome.
+
+The bug was invisible from the install this grew out of, which pins every model
+explicitly. It only appears on the shape most relay users actually have.
+
+### Added
+
+- **Model discovery from `/v1/models`.** Providers that pin no models are asked
+  for their own catalogue (`discovery.list_models()`, `discovery.from_endpoint()`,
+  `discovery.pending_discovery()`). Listing supplies *names* only — every name
+  still gets a real completion before it can enter a route, because being listed
+  is not evidence of being routable. That was already the project's whole thesis
+  and it does not change here.
+- **Non-chat filtering.** A relay's catalogue also fronts embeddings, rerankers,
+  speech, image, video and moderation models; sending those a chat completion
+  produces a confusing failure rather than a verdict. `discovery.is_chat_model()`
+  filters by name and each skip is reported. Applied **only** to discovered
+  models — anything pinned by hand is taken at the user's word, since the
+  heuristic is wrong in both directions on unusual names.
+- `--no-discover-models` to switch listing off entirely, and `--max-discovered`
+  (default 25) to cap how many models one listing contributes. A gateway
+  advertising 300 ids would otherwise mean 300 probes per tick.
+- 53 tests for the above (`tests/test_discovery_endpoint.py`), including the
+  regression itself: a relay-only config previously yielded zero candidates.
+
+### Changed
+
+- Listing responses are cached per `base_url` for the life of the process, so
+  sibling providers sharing one relay do not each fetch the same catalogue.
+- Both OpenAI shapes are accepted: `{'data': [{'id': ...}]}` and a bare array.
+- A provider whose API key is missing is never contacted — no point asking a
+  gateway for its catalogue with credentials we do not have. The skip says which
+  variable is absent.
+- Discovery order is now config-pinned, then listing, then SQLite, with earlier
+  winning on collision. A hand-pinned entry keeps its explicit `api_mode` and
+  `key_env` even when the same model also appears in a listing.
+
+### Documented
+
+- New README section on relays and gateways, including the limit worth being
+  honest about: when every model reaches you through one relay, a chain of four
+  is four models behind one endpoint, and cross-provider fallback buys nothing
+  until a genuinely separate second endpoint exists.
+
 ## [0.3.0] — 2026-09-03
 
 Ranking hysteresis (0.2.0) was calibrated for the wrong magnitude of noise. On a
@@ -155,6 +206,7 @@ Initial release.
   provider, siblings on a shared endpoint collided and one sibling's verdict was
   read back as every sibling's, so a dead key could look alive.
 
+[0.4.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Machbub/hermes-aux-autoheal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Machbub/hermes-aux-autoheal/releases/tag/v0.1.0
