@@ -295,10 +295,10 @@ the other.
   `auxiliary.<task>.fallback_chain` natively; if those entries name a model
   that is gone, the proxy only sees traffic never reaching it. Keeping those
   names real is what this tool exists for.
-- They compose. Point a Hermes provider at a local proxy and this tool will
-  happily probe and rank the models behind it. Most of what this tool decides
-  then collapses into one `base_url`, and the routing intelligence moves into
-  the proxy — which may be exactly what you want.
+- They work together. Point a Hermes provider at a local proxy and this tool
+  will probe and rank the models behind it. The proxy becomes the single
+  `base_url`, routing moves into it, and this tool's job shrinks to keeping
+  that one entry healthy — which may be exactly what you want.
 
 Use a proxy when you want per-request failover and a single endpoint for many
 tools. Use this when you want no extra process in front of your models, a
