@@ -324,17 +324,37 @@ def discover(config, *, sqlite_db=None, env_file=None, keys=None,
     seen = set()
     usable, skipped = [], list(listing_skips)
     for cand in found:
-        ident = (cand['base_url'], cand['model'])
-        if ident in seen:
-            continue
-        seen.add(ident)
         if not cand['base_url']:
             skipped.append((cand, 'no base_url'))
             continue
-        if not keys.get(cand['key_env']):
+        api_key = keys.get(cand['key_env'])
+        if not api_key:
             skipped.append((cand, f'no {cand["key_env"]} in env or .env'))
             continue
+        # A route's identity is what actually goes on the wire: endpoint, model,
+        # and CREDENTIAL. Keying on (base_url, model) alone silently deleted
+        # every spare key at a shared relay before it could be probed — exactly
+        # the "same model, different key" spare that pick_chat_chain's first pass
+        # exists to select, and the only kind that survives a balance=0 or a 429
+        # quota pause. That pass was selecting from a pool the deduper had
+        # already emptied.
+        #
+        # The resolved key, not the env var name or the provider label, is the
+        # discriminator. Two labels pointing at one credential are the same route
+        # listed twice, and collapsing them is what lets a pinned entry's
+        # api_mode win over the same model discovered from a listing. Two labels
+        # with different credentials are genuinely different routes with
+        # independent quotas.
+        #
+        # Model is compared raw here: it is the literal string sent upstream, so
+        # two spellings at one endpoint are not interchangeable. That is a
+        # different question from router.model_id, which asks which spares are
+        # genuinely diverse.
+        ident = (cand['base_url'], cand['model'], api_key)
+        if ident in seen:
+            continue
+        seen.add(ident)
         cand = dict(cand)
-        cand['api_key'] = keys[cand['key_env']]
+        cand['api_key'] = api_key
         usable.append(cand)
     return usable, skipped

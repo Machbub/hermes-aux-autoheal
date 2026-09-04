@@ -76,14 +76,34 @@ def test_discover_requires_a_key():
 
 
 def test_discover_dedupes_same_route():
+    """One endpoint + one model + one CREDENTIAL is one route, listed twice."""
     cfg = {'custom_providers': [
         {'name': 'One', 'base_url': 'https://same/v1', 'model': 'dup'},
         {'name': 'Two', 'base_url': 'https://same/v1', 'model': 'dup'},
     ]}
     usable, _ = discovery.discover(
         cfg, keys={'ONE_API_KEY': 'k', 'TWO_API_KEY': 'k'})
-    assert len(usable) == 1, 'same base_url+model is one route'
+    assert len(usable) == 1, 'one credential behind two labels is one route'
     assert usable[0]['provider'] == 'One', 'first (config) entry wins'
+
+
+def test_discover_keeps_a_spare_key_on_the_same_route():
+    """Same endpoint and model, DIFFERENT key: two routes, not one.
+
+    This is the "same model, different key" spare that ``pick_chat_chain``
+    selects first — the only kind that survives a ``balance=0`` or a ``429``
+    quota pause, since both are properties of the credential rather than the
+    model. Deduping on (base_url, model) deleted every such spare before it
+    could be probed, so that pass was picking from an already-emptied pool.
+    """
+    cfg = {'custom_providers': [
+        {'name': 'Primary', 'base_url': 'https://same/v1', 'model': 'dup'},
+        {'name': 'Spare', 'base_url': 'https://same/v1', 'model': 'dup'},
+    ]}
+    usable, _ = discovery.discover(
+        cfg, keys={'PRIMARY_API_KEY': 'sk-1', 'SPARE_API_KEY': 'sk-2'})
+    assert sorted(c['key_env'] for c in usable) == [
+        'PRIMARY_API_KEY', 'SPARE_API_KEY']
 
 
 def test_discover_skips_missing_base_url():
