@@ -381,9 +381,19 @@ def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH, incumbent_chain=()):
        is excluded.
 
     A holder is not defended when it has left ``ordered`` (retired, down,
-    demoted) or when it failed its latest probe — ``ok_now`` false must sink to
-    the back of the chain, never sit at ``chain[0]``, because Hermes stops
-    walking the chain at the first entry that errors mid-request.
+    demoted) or when :func:`holder_may_hold_slot` says its latest probe failure
+    costs it this position — strict at ``chain[0]``, forgiving of one grace
+    strike further down.
+
+    On the seatability of challengers: the eviction test filters on
+    ``model_id(c) not in seen_models``, which happens to be pass 2's condition
+    and therefore the weakest seating bar in this function. So every challenger
+    counted here can actually take the slot it frees. That is load-bearing, not
+    incidental — :func:`pick_chat_chain` has no equivalent filter, because chat
+    wants the same model on a second origin, and there the missing check let
+    permanently-unseatable candidates evict every holder on every tick. If this
+    function's dedup rule ever changes, re-derive the filter from whatever the
+    weakest seating pass then accepts.
     """
     seen_providers = {primary['provider']}
     seen_models = {model_id(primary)}
@@ -400,8 +410,8 @@ def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH, incumbent_chain=()):
             holder = by_ident.get(ident_of(entry))
             if holder is None:
                 continue                        # left the pool: retired/down
-            if not holder.get('ok_now', True):
-                continue                        # in grace: must not hold a slot
+            if not holder_may_hold_slot(holder, len(chain)):
+                continue                        # blipped at slot 0, or demoted
             if model_id(holder) in seen_models:
                 continue                        # primary or an earlier slot covers it
             # Another slot holder is not a challenger — it already has a slot,

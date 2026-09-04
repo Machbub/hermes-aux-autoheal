@@ -128,12 +128,14 @@ def test_holder_that_left_the_pool_is_replaced():
 
 
 def test_holder_failing_its_latest_probe_loses_the_slot():
-    """In grace: still eligible, but must never hold a chain slot.
+    """At ``chain[0]``: still eligible, but must never hold the front slot.
 
-    Hermes stops walking the chain at the first entry that errors, so a suspect
-    entry ahead of a healthy one costs a request. Ordering comes from ``rank``,
-    which sinks ``ok_now`` false to the back — this test goes through it rather
-    than hand-ordering, because that sinking is half the guarantee.
+    Hermes tries the chain in order, so a suspect entry at the front costs a
+    round-trip on every request until the next tick. Ordering comes from
+    ``rank``, which sinks ``ok_now`` false to the back — this test goes through
+    it rather than hand-ordering, because that sinking is half the guarantee.
+
+    Slots further down are a different question: see the grace tests below.
     """
     primary = _cand('A', 'lead', 0.1)
     holder = _cand('B', 'flaky', 1.0, ok=False)
@@ -143,6 +145,70 @@ def test_holder_failing_its_latest_probe_loses_the_slot():
 
     chain = router.pick_chain(ordered, primary, 1, on_disk)
     assert _idents(chain) == [('C', 'steady')]
+
+
+# ------------------------------------------------------ grace, per slot index
+
+def _grace_pool(streak):
+    """Slot 1's holder just failed a probe; no challenger out-ranks it.
+
+    Same tier and context everywhere, so nothing can win on merit and the only
+    question left is whether the failed probe alone costs the slot.
+    """
+    primary = _cand('A', 'lead', 0.1)
+    front = _cand('B', 'steady', 1.0)
+    holder = _cand('C', 'wobbly', 1.0, ok=False)
+    holder['fail_streak'] = streak
+    rival = _cand('D', 'other', 1.0)
+    return primary, [primary, front, holder, rival]
+
+
+_GRACE_ON_DISK = (_entry('B', 'steady'), _entry('C', 'wobbly'))
+
+
+def test_a_mid_chain_holder_survives_one_grace_strike():
+    """One failed probe is ``strike 1``, not a verdict.
+
+    The compression chain kept the strict rule after the chat chain dropped it,
+    which cost two writes per blip — one to demote, one to restore on recovery.
+    Replaying the real pool at the blip rates observed in its log: 14.1% of
+    ticks wrote under the strict rule, 8.9% under this one.
+    """
+    primary, pool = _grace_pool(streak=1)
+    chain = router.pick_chain(router.rank(pool), primary, 2, _GRACE_ON_DISK)
+    assert _idents(chain) == [('B', 'steady'), ('C', 'wobbly')]
+
+
+def test_a_demoted_mid_chain_holder_loses_its_slot():
+    """``strike 2`` is the verdict, and then the slot goes."""
+    primary, pool = _grace_pool(streak=2)
+    chain = router.pick_chain(router.rank(pool), primary, 2, _GRACE_ON_DISK)
+    assert _idents(chain) == [('B', 'steady'), ('D', 'other')]
+
+
+def test_grace_is_indexed_by_the_slot_the_holder_would_occupy():
+    """Promotion into slot 0 is strict, even for a holder that sat at slot 1.
+
+    ``holder_may_hold_slot`` is called with ``len(chain)`` — the slot the holder
+    is about to take — not its position on disk. So when slot 0's holder is
+    evicted, the slot-1 holder is being promoted to the front and has to meet the
+    front slot's bar. Getting this wrong the other way would quietly let a
+    blipped model reach ``chain[0]`` whenever the entry ahead of it died.
+    """
+    primary = _cand('A', 'lead', 0.1)
+    was_front = _cand('B', 'blipped', 1.0, ok=False)
+    was_front['fail_streak'] = 1
+    was_second = _cand('C', 'wobbly', 1.0, ok=False)
+    was_second['fail_streak'] = 1
+    healthy_one = _cand('D', 'other', 1.0)
+    healthy_two = _cand('E', 'spare', 1.0)
+    on_disk = (_entry('B', 'blipped'), _entry('C', 'wobbly'))
+
+    chain = router.pick_chain(
+        router.rank([primary, was_front, was_second, healthy_one, healthy_two]),
+        primary, 2, on_disk)
+
+    assert _idents(chain) == [('D', 'other'), ('E', 'spare')]
 
 
 def test_holder_promoted_to_primary_does_not_also_hold_a_slot():
