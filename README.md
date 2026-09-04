@@ -49,13 +49,9 @@ Every run:
 ```console
 $ hermes-aux-autoheal --task compression --verbose
   skip ProviderA/fast-preview: probe failed: HTTP 429 quota temporarily paused
-  skip ProviderB/legacy-chat-v4: probe failed: HTTP 503 {"code":"model_not_found",
-       "message":"no available channel for model legacy-chat-v4"}
+  skip ProviderB/legacy-chat-v4: probe failed: HTTP 503 model_not_found
   ok   ProviderA/swift-8b: tier=0 ctx=1,000,000 probe=7.8s
-  ok   ProviderA/compact-mini: tier=0 ctx=204,800 probe=2.3s
-DRY RUN would update compression: primary=ProviderA/swift-8b,
-  chain=[('ProviderB', 'reasoner-xl'), ('ProviderA', 'compact-mini'),
-         ('ProviderA', 'mid-27b')] (primary changed)
+DRY RUN would update compression: primary=ProviderA/swift-8b
 re-run with --apply to write it
 ```
 
