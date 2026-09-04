@@ -5,6 +5,42 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] — 2026-09-04
+
+The chat chain lost track of which host its primary lived on at exactly the
+moment that mattered, and offered a spare on the dead host first.
+
+### Fixed
+
+- **A spare on the primary's own dead host was offered as `fallback_providers[0]`.**
+  `pick_chat_chain` recovered the primary's origin by scanning the pool it was
+  given, but that pool is the health-filtered one: the primary drops out of it
+  precisely when the primary is unreachable. `primary_origin` then fell back to
+  `''`, every real host compared as cross-origin, and pass 2 — whose whole job is
+  to leave a dead host — seated a candidate on that host at slot 0.
+
+  Hermes walks `fallback_providers` in order and stops at the first entry that
+  answers, so slot 0 on a dead origin is one guaranteed failed round trip per
+  request. The next tick could not repair it either: the same missing record
+  produced the same wrong order every time, so the chain was stable and wrong.
+
+  `pick_chat_chain` now takes `all_candidates`, the pool before health filtering,
+  and reads the origin from there. The record is never seatable — every use is
+  already filtered on `ident(c) != primary_ident` — so it contributes an origin
+  and nothing else. The parameter is optional and defaults to empty, which
+  reproduces the old behaviour for any caller that does not pass it.
+
+  Verified at chain depths 1, 2 and 3: the chain the picker returns is now
+  identical whether or not the primary passed its own probe. An end-to-end CLI
+  test drives the whole path — real config, real write, primary failing its probe
+  — and asserts slot 0 is off the dead host.
+
+### Notes
+
+- This shape needs at least two hosts to appear at all. An install whose
+  candidates all sit behind one relay has nowhere better to put slot 0, and the
+  behaviour is unchanged there.
+
 ## [0.7.2] — 2026-09-04
 
 The v0.7.1 grace fix went into the chat chain only. `pick_chain` (compression)

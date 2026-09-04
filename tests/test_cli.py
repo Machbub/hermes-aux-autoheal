@@ -388,8 +388,40 @@ def test_chat_chain_second_run_is_a_noop(home, monkeypatch, capsys):
     assert os.stat(home / 'config.yaml').st_mtime_ns == mtime
 
 
+def test_chat_chain_avoids_the_primarys_dead_host_end_to_end(home, monkeypatch,
+                                                            capsys):
+    """The whole path, with the chat primary failing its own probe.
+
+    `Alpha/alpha-chat` is the chat model and `Alpha` is the only provider on
+    alpha.example. When alpha-chat stops answering, health filtering removes it
+    from the pool the picker sees — and with it the only record of which host the
+    primary lives on. A spare on that same dead host must not be offered first.
+    """
+    # Alpha gains a peer model on its own host; Beta lives elsewhere.
+    text = (home / 'config.yaml').read_text().replace(
+        '      alpha-reasoner: {}',
+        '      alpha-reasoner: {}\n      alpha-chat: {}')
+    (home / 'config.yaml').write_text(text)
+
+    # alpha-chat (the chat primary) is DOWN. Its peers on the same host answer.
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'alpha-reasoner',
+                                    'beta-mini'}))
+
+    rc = cli.main(['--task', 'compression', '--apply', '--chat-depth', '2'])
+    capsys.readouterr()
+    cfg = read_cfg(home)
+
+    assert rc == 0
+    chain = cfg['fallback_providers']
+    assert chain, 'spares must be maintained while the primary is down'
+    assert 'alpha.example' not in chain[0]['base_url'], (
+        'slot 0 sits on the host that just took the primary down: '
+        f'{[(e["provider"], e["model"]) for e in chain]}')
+    assert cfg['model']['default'] == 'alpha-chat', 'chat model untouched'
+
+
 def test_chat_chain_skipped_without_model_default(home, monkeypatch, capsys):
-    """No model.provider/model.default → the chat chain is left alone."""
     import re
     text = (home / 'config.yaml').read_text()
     # drop only the top-level model: block (it precedes custom_providers,

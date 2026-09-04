@@ -204,7 +204,8 @@ def main(argv=None):
         chat_chain = router.pick_chat_chain(
             eligible, chat_primary,
             depth=args.chat_depth,
-            incumbent_chain=chat_incumbent)
+            incumbent_chain=chat_incumbent,
+            all_candidates=candidates)
         chat_desc = [(c['provider'], c['model']) for c in chat_chain]
         chat_desired = [router.as_chat_entry(c) for c in chat_chain]
         chat_changed, chat_reason = router.chat_chain_needs_write(
