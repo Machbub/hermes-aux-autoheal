@@ -23,6 +23,8 @@ must win by a real margin — not by noise — before it displaces one.
 """
 import re
 
+from . import health
+
 # Tier heuristics. These are substring patterns over model NAMES, and they are
 # not a quality judgement about any vendor: a heavy reasoning model is excellent
 # at reasoning and a poor fit for a background summariser, where its cost and
@@ -505,6 +507,37 @@ def outranks_for_chat_slot(challenger, holder, primary_model, primary_tier):
             < chat_merit_key(holder, primary_model, primary_tier))
 
 
+def holder_may_hold_slot(holder, slot_index, *,
+                         demote_streak=health.DEFAULT_DEMOTE_STREAK):
+    """May an incumbent keep THIS slot after failing its latest probe?
+
+    Slot 0 must be alive. Hermes tries the chain in order, so a suspect entry at
+    the front costs a wasted round-trip on every request until the next tick.
+
+    Slots 1..n are a different question. ``ok_now`` false does not mean dead — it
+    means one probe failed and the model is inside its grace window, still
+    eligible, ``strike 1/demote_streak``. Evicting on that single strike put two
+    contradictory policies in one file: eligibility forgives one failure, slot
+    defence did not. It also cost two writes per blip — one to demote, one to
+    restore when the model came back on the next tick.
+
+    The comment this replaces justified the strict rule with "Hermes stops
+    walking the chain at the first entry that errors". Reading the caller, that
+    is not what happens: the chain walk skips entries it cannot resolve or that
+    are marked unhealthy, then falls through to further fallback layers. The
+    claim holds for slot 0 only.
+
+    Tradeoff, stated: a genuinely dead model keeps a mid-chain slot for one extra
+    tick before ``strike 2`` demotes it. The caller walks past it, so the cost is
+    a wasted round-trip, not a failed request.
+    """
+    if holder.get('ok_now', True):
+        return True
+    if slot_index == 0:
+        return False
+    return holder.get('fail_streak', 0) < demote_streak
+
+
 def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
     """Choose the CHAT model's fallbacks (top-level ``fallback_providers``).
 
@@ -580,6 +613,44 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
         taken.add(ident(cand))
         chain.append(cand)
 
+    same_model_cap = max(1, depth // 2)
+
+    def could_be_seated(cand, seated, same_model_used):
+        """Could this candidate actually take a slot, given the chain so far?
+
+        Pass 0's eviction test was asking the wrong question. It compared the
+        holder against every better-ranked candidate in the pool, including ones
+        no later pass can seat. On a relay-shaped install several provider labels
+        front one model on one origin, so all but one of them are permanently
+        unseatable — while carrying the BEST merit key, since a label of the
+        primary's own model matches its tier exactly. Those phantoms out-ranked
+        every holder on every tick, so pass 0 seated nothing at all: slot defence
+        was dead code, the chain was rebuilt from scratch each tick, and any blip
+        anywhere changed the membership.
+
+        Worse, the eviction was usually a demotion. The phantom cannot take the
+        freed slot, so whatever ranks next does — measured across five replays at
+        the blip rates observed on a live install: 36 demotions before, 2 after.
+
+        An eviction only justifies a config write if the challenger ends up in
+        the chain, so mirror the passes that do the seating:
+
+        * pass 1 seats a same-model spare, until ``same_model_cap``
+        * pass 2 seats any candidate on an origin not yet used
+        * pass 3 backfills, one slot per model
+
+        Deliberately NOT the model-dedup filter :func:`pick_chain` uses: for chat
+        the same model on a DIFFERENT origin is a real fallback (a dead host takes
+        all of its keys with it), so two labels of one model can legitimately
+        share the chain when they sit on different hosts.
+        """
+        m = model_id(cand)
+        if m == primary_model:
+            return same_model_used < same_model_cap
+        if origin(cand) not in ({primary_origin} | {origin(c) for c in seated}):
+            return True
+        return m not in ({primary_model} | {model_id(c) for c in seated})
+
     # pass 0: defend what is already on disk (same rule as the compression chain)
     if incumbent_chain:
         by_ident = {ident(c): c for c in rest}
@@ -590,20 +661,25 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
             holder = by_ident.get(ident(entry))
             if holder is None:
                 continue                        # left the pool: retired/down
-            if not holder.get('ok_now', True):
-                continue                        # in grace: must not hold a slot
+            if not holder_may_hold_slot(holder, len(chain)):
+                continue                        # blipped at slot 0, or demoted
             if ident(holder) in taken:
                 continue
+            # Only a challenger that could ACTUALLY be seated justifies evicting
+            # the holder — see could_be_seated. Without this, permanently
+            # unseatable duplicates evicted every holder on every tick.
+            seated_same_model = sum(
+                1 for c in chain if model_id(c) == primary_model)
             if any(outranks_for_chat_slot(c, holder, primary_model, primary_tier)
                    for c in rest
                    if ident(c) not in held
                    and ident(c) not in taken
-                   and c.get('ok_now', True)):
+                   and c.get('ok_now', True)
+                   and could_be_seated(c, chain, seated_same_model)):
                 continue
             take(holder)
 
     # pass 1: identical model behind a different key (covers key/quota death)
-    same_model_cap = max(1, depth // 2)
     same_model_used = sum(
         1 for c in chain if model_id(c) == primary_model)
     for c in rest:
