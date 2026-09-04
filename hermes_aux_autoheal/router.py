@@ -363,8 +363,31 @@ def pick_chain(ordered, primary, depth=DEFAULT_CHAIN_DEPTH, incumbent_chain=()):
     return chain
 
 
+def chat_merit_key(cand, primary_model, primary_tier):
+    """What makes one chat spare genuinely BETTER than another.
+
+    Split out from :func:`chat_slot_key` because the two questions are different,
+    and conflating them broke slot stickiness once already:
+
+    * "which order should the spares be in?"    -> needs a total order
+    * "may this challenger evict that holder?"  -> must compare merit only
+
+    Only these three components are merit. Rank by CLOSENESS to what the user
+    actually chose:
+
+    1. the identical model behind another key — same capability, no surprise
+    2. tier distance from the primary — a peer before a downgrade
+    3. widest context window
+
+    Latency is absent on purpose, same reason as :func:`outranks_for_slot`.
+    """
+    return (0 if model_id(cand) == primary_model else 1,
+            abs(tier_of(cand['model']) - primary_tier),
+            -min(cand.get('context') or 0, 1_000_000))
+
+
 def chat_slot_key(cand, primary_model, primary_tier):
-    """Ordering key for a CHAT fallback slot. NOT the same as tier ordering.
+    """Total ordering key for a CHAT fallback slot: merit, then a stable tail.
 
     ``tier_of`` exists for compression, where a cheap fast model is genuinely the
     better pick — tier 0 (flash/mini/lite) sorts first. Applying that to the chat
@@ -372,25 +395,41 @@ def chat_slot_key(cand, primary_model, primary_tier):
     first sync put a cheap flash model ahead of a spare key for the user's own
     flagship model, because flash is tier 0 and the flagship is tier 2. For chat
     that is a capability downgrade offered before a like-for-like replacement.
+    Hence :func:`chat_merit_key`.
 
-    So rank by CLOSENESS to what the user actually chose:
+    The ``(provider, model)`` tail is NOT cosmetic. Merit alone leaves large tied
+    groups — on the reference install 6 of 11 candidates shared one merit key —
+    and a tie falls through to the caller's ``rank()`` order, which is
+    latency-driven. Every median crossing inside a tied group then reshuffles
+    which peer holds which slot, and a reorder is a config write. Replaying the
+    real pool over 200 ticks: **151 writes without the tail, 2 with it**; with
+    nothing flapping at all, 150 of those writes were pure churn.
 
-    1. the identical model behind another key — same capability, no surprise
-    2. tier distance from the primary — a peer before a downgrade
-    3. widest context window
-
-    Latency is absent on purpose, the same reason it is absent from
-    :func:`outranks_for_slot`.
+    The tail must be IMMUTABLE. ``fail_streak`` was tried and measured worse than
+    nothing: a peer wobbling 0/1/2 through its grace period reorders the group
+    every tick — 182 writes over the same 200 ticks. Health is already handled
+    upstream (``ok_now`` sinks a failing candidate, a demoted one leaves the pool
+    entirely), so this tail exists only to be stable.
     """
-    return (0 if model_id(cand) == primary_model else 1,
-            abs(tier_of(cand['model']) - primary_tier),
-            -min(cand.get('context') or 0, 1_000_000))
+    return chat_merit_key(cand, primary_model, primary_tier) + (
+        (cand.get('provider') or '').lower(),
+        (cand.get('model') or '').lower())
 
 
 def outranks_for_chat_slot(challenger, holder, primary_model, primary_tier):
-    """Chat-chain equivalent of :func:`outranks_for_slot`, blind to latency."""
-    return (chat_slot_key(challenger, primary_model, primary_tier)
-            < chat_slot_key(holder, primary_model, primary_tier))
+    """May ``challenger`` take the slot ``holder`` already occupies?
+
+    Compares MERIT only, never the name tail. Using the full
+    :func:`chat_slot_key` here is a real bug, caught by replay: the tail makes
+    every merit-equal peer with an alphabetically earlier name "outrank" the
+    incumbent, so pass 0 evicts a perfectly good holder on the strength of its
+    name — stickiness defeated by a field that exists only to break ties.
+
+    Blind to latency, same reason as :func:`outranks_for_slot`: a fallback is not
+    there to be fast, it is there to answer when the primary stops.
+    """
+    return (chat_merit_key(challenger, primary_model, primary_tier)
+            < chat_merit_key(holder, primary_model, primary_tier))
 
 
 def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
@@ -400,11 +439,11 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
     for compression three labels reselling one model are false diversity — if the
     model dies upstream all three die together.
 
-    For chat the dominant failure observed on this install is different. In one
-    afternoon: ``balance=0`` on two bai models (key exhausted), ``429 model quota
-    is temporarily paused`` on MiniMax-M3 (model throttled), and a Cloudflare 522
-    (origin unreachable). Those are three distinct failures and they need three
-    distinct kinds of spare:
+    For chat the dominant failure observed on the reference install is different.
+    In one afternoon: ``balance=0`` on two models of one provider (key exhausted),
+    ``429 model quota is temporarily paused`` on another (model throttled), and a
+    Cloudflare 522 (origin unreachable). Those are three distinct failures and
+    they need three distinct kinds of spare:
 
     1. **Same model, different key.** Covers the key/quota death, which is the
        most frequent. Capability is identical, so this is the cheapest possible

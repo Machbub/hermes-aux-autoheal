@@ -187,6 +187,77 @@ def test_unknown_primary_origin_still_yields_cross_origin_spares():
     assert len(chain) == 2
 
 
+# --------------------------------------------------------- tiebreak stability
+
+def test_merit_ties_are_broken_by_name_not_latency():
+    """The churn source measured on the reference install: merit ties.
+
+    Six of eleven live candidates shared one merit key, so the tied group fell
+    through to the caller's ``rank()`` order — i.e. to latency. Every median
+    crossing reshuffled the slots and every reshuffle was a config write: 151
+    writes over 200 replayed ticks, 150 of them with nothing flapping at all.
+    """
+    a = _cand('Zeta', 'peer-one', latency=0.2)
+    b = _cand('Alpha', 'peer-two', latency=30.0)
+    pm, pt = 'lead', router.tier_of('lead')
+    assert (router.chat_merit_key(a, pm, pt)
+            == router.chat_merit_key(b, pm, pt)), 'fixture: must be merit-equal'
+    assert (router.chat_slot_key(b, pm, pt)
+            < router.chat_slot_key(a, pm, pt)), 'Alpha sorts first despite 150x latency'
+
+
+def test_chain_is_identical_across_latency_permutations():
+    """The whole chain, not just slot 0, must be latency-independent."""
+    import itertools
+    pool_spec = [('ProvA', FLAGSHIP), ('ProvB', FLAGSHIP), ('ProvC', FLAGSHIP),
+                 ('ProvD', FLASH), ('ProvE', 'peer-one'), ('ProvF', 'peer-two')]
+    seen = set()
+    for perm in itertools.permutations([0.3, 1.1, 2.7, 5.5, 11.0, 22.0]):
+        pool = [_cand(p, m, latency=lat)
+                for (p, m), lat in zip(pool_spec, perm)]
+        chain = router.pick_chat_chain(pool, ('ProvA', FLAGSHIP), 4)
+        seen.add(tuple(_idents(chain)))
+    assert len(seen) == 1, f'latency reordered the chain {len(seen)} ways'
+
+
+def test_tiebreak_carries_nothing_mutable():
+    """``fail_streak`` in the tail was tried and measured WORSE (182 writes).
+
+    A peer wobbling through its grace period would reorder the group every tick.
+    The tail may only contain fields that cannot change between ticks.
+    """
+    base = _cand('P', 'peer')
+    pm, pt = 'lead', router.tier_of('lead')
+    before = router.chat_slot_key(base, pm, pt)
+    for field, value in (('fail_streak', 2), ('latency', 40.0),
+                         ('lat_median', 40.0), ('ok_now', False)):
+        mutated = dict(base)
+        mutated[field] = value
+        assert router.chat_slot_key(mutated, pm, pt) == before, \
+            f'{field} leaked into the ordering key'
+
+
+def test_name_tail_cannot_evict_an_incumbent():
+    """``outranks_for_chat_slot`` must compare merit only.
+
+    Using the full slot key there lets any merit-equal peer with an
+    alphabetically earlier name displace the holder, defeating slot stickiness
+    with a field that exists only to break ties.
+    """
+    holder = _cand('Zeta', 'peer-one', latency=9.0)
+    challenger = _cand('Alpha', 'peer-two', latency=0.4)
+    pm, pt = 'lead', router.tier_of('lead')
+    assert not router.outranks_for_chat_slot(challenger, holder, pm, pt)
+
+
+def test_a_genuinely_better_spare_still_evicts():
+    """The guard must not become lock-in: real merit still takes the slot."""
+    holder = _cand('Zeta', 'peer-one', context=32_000)
+    better = _cand('Alpha', 'lead')          # identical model to the primary
+    pm, pt = 'lead', router.tier_of('lead')
+    assert router.outranks_for_chat_slot(better, holder, pm, pt)
+
+
 # ------------------------------------------------------------------ write gating
 
 def test_tail_reorder_does_not_require_a_write():
