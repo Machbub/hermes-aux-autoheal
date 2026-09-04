@@ -311,11 +311,25 @@ replacement.
 `pick_chat_chain` / `chat_slot_key` rank by *closeness to what the user
 chose*: the identical model behind another key first (covers key/quota death,
 capability unchanged), then tier distance from the primary, then widest
-context. Origin diversity is its own pass — a dead origin (Cloudflare 522)
+context, and finally `(provider, model)` as a deterministic tail. Origin
+diversity is its own pass — a dead origin (Cloudflare 522)
 takes every key on it, so the chain must leave the host. Same-model spares are
 capped at `depth // 2`, across origins too: the cap protects against one model
 filling the chain, regardless of how many hosts resell it. Slot stickiness is
 the same latency-blind guard as the compression chain.
+
+That tail is load-bearing, not cosmetic. The three merit components leave large
+tied groups (6 of 11 candidates on the reference install), and a tie falls
+through to `rank()`'s latency order, so every median crossing reshuffled the
+slots: **151 writes over 200 replayed ticks, 150 of them with nothing
+flapping**. With the tail, 2. It must also be immutable — `fail_streak` was
+tried there and made it worse (182 writes), because a peer wobbling through its
+grace period reorders the group every tick.
+
+Eviction is a separate question from ordering, so it uses `chat_merit_key`
+rather than the full key: with the tail included, any merit-equal peer with an
+alphabetically earlier name displaced the incumbent, which defeated slot
+stickiness entirely.
 
 The CLI applies it: `--apply` writes `fallback_providers` (top-level) in the
 same transaction as the auxiliary route, reading the chat primary from

@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] — 2026-09-04
+
+The fifth churn source, and the first one that lived in the chat chain rather
+than the compression route. Found by replaying the real candidate pool, not by
+reading the code: **151 writes over 200 ticks**, and with nothing at all
+flapping, **150 of them were pure churn**.
+
+`chat_slot_key` ranked on merit alone — same-model-behind-another-key, tier
+distance, context width — which left large tied groups: 6 of 11 live candidates
+shared one key. A tie fell through to the caller's `rank()` order, which is
+latency-driven, so every median crossing inside a tied group reshuffled which
+peer held which slot, and every reshuffle was a config write.
+
+- **Deterministic tail** on `chat_slot_key`: `(provider, model)`, lowercased.
+  151 -> 2 writes over 200 ticks; identical result across 5 RNG seeds and all
+  720 latency permutations of the live pool.
+- **`chat_merit_key` split out** from `chat_slot_key`. The two questions are
+  different: ordering needs a total order, eviction must compare merit only.
+  `outranks_for_chat_slot` now uses the merit key — with the full key, any
+  merit-equal peer with an alphabetically earlier name evicted the incumbent,
+  which defeated slot stickiness entirely. Caught by replay, then pinned by a
+  test.
+- **The tail must be immutable.** `fail_streak` was tried in it and measured
+  *worse than nothing*: a peer wobbling 0/1/2 through its grace period reorders
+  the group every tick — 182 writes over the same 200 ticks. Health is already
+  handled upstream.
+- 5 new tests (20 in `test_chat_chain.py`; 280 overall).
+
 ## [0.6.1] — 2026-09-04
 
 The chat chain shipped in 0.6.0 was dead on arrival as *behaviour*: the
