@@ -225,6 +225,117 @@ relay if you want that.
 Use `--no-discover-models` to switch listing off entirely and probe only what
 you pinned.
 
+## What it is good at, and what it is not
+
+**Good at:**
+
+- **Nothing sits in the request path.** There is no process to keep alive, no
+  port to bind, no localhost hop. If this tool crashes, is uninstalled, or its
+  timer is disabled, Hermes keeps running on the last route it wrote. The
+  failure mode is a stale route, not an outage.
+- **It verifies routability, not advertisement.** Every candidate gets a real
+  4-token completion. That is the only way to catch the case a `/v1/models`
+  check cannot see: a model still listed while no backend can serve it
+  (`HTTP 503 model_not_found`).
+- **It uses the credentials you already have.** Your providers, your keys, your
+  `.env`. No third-party account, no margin on top of your spend, no prompt
+  content leaving the machine.
+- **The config stays yours.** Comments and formatting survive the rewrite, edits
+  by hand are not clobbered, every write leaves a timestamped backup (kept 10
+  deep / 7 days, hard cap 30), and the default is a dry run that prints its
+  reasoning.
+- **Churn control is the part that took the work.** Hysteresis, median latency
+  over a window, slot stickiness, per-slot grace. A route that flaps is worse
+  than one that is slightly stale, because every write invalidates whatever is
+  reading the file. The worst churn source found so far wrote **151 times in a
+  200-tick replay with nothing actually failing**; after the fix, twice. Live
+  write rate on the reference install today is under 10% of ticks, and every
+  remaining write corresponds to a real health change.
+
+**Not good at:**
+
+- **A probe is a sample, not a subscription to the truth.** The blind window is
+  one tick — five minutes at the recommended interval. A model that dies at
+  12:01 stays in the route until 12:05. Hermes's own `fallback_chain` is what
+  saves the request in between; this tool only makes sure that chain is worth
+  walking.
+- **A small probe cannot see a per-model quota wall.** Measured on a live
+  install: 244 `HTTP 429` responses on one model in real traffic over the same
+  period the 4-token probe returned `200 OK` at 1.8s. Not a bug to be fixed —
+  the probe is too small to trip a limit that a 25k-token request trips
+  immediately, and the outage arrives in bursts that begin and end between two
+  ticks. Scheduled probing has a floor on what it can detect, and this is it.
+- **It reacts per tick, never per request.** No mid-request failover, no retry
+  policy, no traffic splitting, no cost-aware routing, no load balancing across
+  keys. Those belong to whatever handles the request, not to a config rewriter.
+- **It costs a few tokens.** Four output tokens per model per TTL window. Small,
+  metered, non-zero.
+- **Tiering is a heuristic.** Tiers come from substring matching on model names,
+  so an unconventionally named model lands in the middle. Overridable with
+  `--fast-pattern` / `--heavy-pattern`, but there is no semantic understanding
+  of what a model is.
+- **It writes a file that other processes also write.** The write path is
+  defensive (read, verify, atomic replace, backup) and safe enough to run on a
+  timer, but a second writer holding a stale copy of `config.yaml` in memory can
+  still overwrite the route on its next save.
+- **One relay is still one point of failure.** A four-entry chain behind a single
+  endpoint is four models and one outage away from empty. See
+  [Relays and gateways](#relays-and-gateways).
+
+## Versus a router or gateway
+
+Routers like [OpenRouter](https://openrouter.ai) (hosted),
+[9Router](https://9router.com) and [LiteLLM](https://docs.litellm.ai) (both
+self-hosted proxies) solve an overlapping problem, and it is worth being precise
+about the overlap, because the difference is not a feature list — it is **where
+the decision lives**.
+
+A router decides per request, inside the request. This decides per tick, then
+gets out of the way. Everything else follows from that.
+
+| | this | 9Router / LiteLLM | OpenRouter |
+|---|---|---|---|
+| in the request path | no | yes, a local process | yes, their infrastructure |
+| what it changes | your `config.yaml` | nothing — it intercepts | nothing — it intercepts |
+| failure signal | scheduled probe, 4 tokens | your real traffic, plus background health checks | fleet-wide telemetry, 30s outage window |
+| reacts within | one tick (5 min default) | one request | mid-request |
+| mid-request failover | no — Hermes's own chain does that | yes | yes |
+| if it stops running | route keeps working, goes stale | all traffic stops | all traffic stops |
+| API keys | stay in your `.env` | stay on your box | theirs, or BYOK for a fee |
+| prompt content | never leaves the machine | never leaves the machine | passes through them |
+| extra moving parts | none | one process, one port | one network hop |
+| cost | your own keys | your own keys | their margin |
+| quota / spend dashboard | no | yes | yes |
+| catalogue | whatever you configured | 60+ providers, OAuth pooling | 400+ models, 25+ free |
+| flap control | hysteresis, median, stickiness, per-slot grace | `cooldown_time` + `allowed_fails` | inverse-square price weighting |
+
+Three things that table understates:
+
+- **A router is strictly better at detection.** Real traffic sees the 429 that a
+  4-token probe cannot, and a 30-second window beats a five-minute tick. If your
+  priority is never sending a request to a dead endpoint, the request path is
+  where that belongs, and no amount of probing catches up.
+- **A router cannot fix your config.** Hermes walks `fallback_providers` and
+  `auxiliary.<task>.fallback_chain` natively. If those entries name a model that
+  has been unroutable for a week, a proxy does not know and does not care —
+  you simply never reach it. That specific failure is the one this tool exists
+  for, and no proxy addresses it.
+- **They compose.** Point a Hermes provider at a local 9Router or LiteLLM
+  instance and this tool will happily probe and rank the models behind it. When
+  you do, most of what this tool decides collapses into one `base_url`, and the
+  routing intelligence moves into the proxy — which may be exactly what you
+  want.
+
+**Pick a router when** you want per-request failover, a spend dashboard, quota
+pooling across subscriptions, or one endpoint for many tools. **Pick this when**
+you want no extra process in front of your models, keys and prompts that never
+leave the box, a config file you can still read, and a route that is correct on
+disk rather than corrected in flight — and you can live with a five-minute
+reaction time.
+
+The honest summary: this is not a router and does not compete with one. It is a
+janitor for a config file that would otherwise quietly rot.
+
 ## Install
 
 ```bash
@@ -629,27 +740,24 @@ environment wins.
 
 ## Limits
 
-Worth knowing before you rely on it:
+The trade-offs are in [What it is good at, and what it is
+not](#what-it-is-good-at-and-what-it-is-not). Mechanical details that section
+does not cover:
 
-- **A probe is a sample, not a guarantee.** A model can pass at 12:00 and be
-  gone at 12:03. This narrows the window; it does not close it. The
-  `fallback_chain` is still what saves an in-flight call.
-- **Probing costs tokens.** Four output tokens per model per TTL window. Small,
-  but not zero on a metered key.
-- **Ranking is heuristic.** Tiers come from substring matching on model names,
-  so an unconventionally named model lands in the middle tier. Not wrong so
-  much as unopinionated.
 - **Context windows come from provider metadata**, which is sometimes absent.
   Models with an unknown window are not excluded by `--min-context`, since
   dropping unknowns would reject every model on a provider that publishes none.
-- **This only heals `auxiliary.*` routes.** Your chat model
-  (`model.provider` / `model.default`) is never touched.
-- **One relay means one point of failure.** Discovery will happily fill a chain
-  from a single gateway's catalogue, and that chain is only as durable as the
-  gateway. See [Relays and gateways](#relays-and-gateways).
+- **Your chosen model is never overwritten.** `model.provider` and
+  `model.default` are read, never written — the chat chain is built *around*
+  whatever you picked. What does get rewritten is the list beside it,
+  `fallback_providers`, plus `auxiliary.<task>` routes.
 - **Discovered models are filtered by name.** A chat model with an unusual name
   containing something like `guard` or `audio` is skipped; pin it by hand if you
   want it considered.
+- **Probe results are cached per `(base_url, model, provider)` for `--ttl`
+  seconds.** Two runs inside one TTL window see the same verdict, which is what
+  makes a 5-minute timer affordable, and also means `--no-cache` is the only way
+  to force a fresh look.
 
 ## Tests
 
@@ -657,7 +765,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-256 tests, run against both YAML backends — with and without `ruamel.yaml`,
+303 tests, run against both YAML backends — with and without `ruamel.yaml`,
 since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config writer
