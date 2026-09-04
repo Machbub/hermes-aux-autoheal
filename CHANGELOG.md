@@ -5,6 +5,56 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-09-04
+
+The chat chain's slot defence never ran. Found by measuring writes on a live
+install after v0.7.0, not by a bug report — v0.7.0 fixed identity comparison so
+pass 0 finally *could* seat incumbents, and the log then showed it still wasn't.
+
+### Fixed
+
+- **Challengers that no pass can seat evicted incumbents anyway.** Pass 0 asked
+  "does any better-ranked candidate exist?" when the question that justifies a
+  config write is "does any better-ranked candidate that would actually take
+  this slot exist?". On a relay-shaped install the primary's own origin also
+  hosts several provider labels of a nearby model, and every one of them carries
+  merit `(1, tier±1, -1M)` — better than any holder on a narrower context —
+  while pass 1 skips them (not the primary's model), pass 2 skips them (origin
+  already used) and pass 3 skips them (their model already holds a slot).
+  Instrumented on the reference pool: **pass 0 seated 1 of 4 slots**. The chain
+  was rebuilt from scratch nearly every tick, so slot stickiness, the sticky
+  latency margin and the tie-break tail from v0.6.2 were all dead code for chat.
+  New `could_be_seated` mirrors the seating passes, so an eviction only happens
+  when the challenger ends up in the chain.
+
+  Measured over 400-tick replays of a live pool at per-model blip rates taken
+  from that install's logs, five seeds: **9.2% of ticks wrote before, 4.0%
+  after**. Live observation over the same window was 7.0%, so the replay is in
+  range. Demoting writes — where the phantom freed a slot it could not fill and a
+  worse candidate moved in — went from **36 to 2**.
+
+- **A mid-chain slot was surrendered on a single failed probe.** `ok_now` false
+  means one probe failed and the candidate is inside its grace window at
+  `strike 1/demote_streak`, still eligible; pass 0 nevertheless dropped it. Two
+  contradictory policies in one file, costing two writes per blip: one to demote,
+  one to restore on recovery. The strict rule was justified in a comment by
+  "Hermes stops walking the chain at the first entry that errors"; reading the
+  caller, the walk skips entries it cannot resolve or that are marked unhealthy
+  and then falls through to further fallback layers, so the claim holds for
+  slot 0 only. New `holder_may_hold_slot` keeps slot 0 strict and lets slots
+  1..n ride out the grace window.
+
+  Tradeoff on record: a genuinely dead model holds a mid-chain slot for one extra
+  tick before `strike 2` demotes it. The caller walks past it, so the cost is a
+  wasted round-trip, not a failed request.
+
+### Notes
+
+- No config-format change; no migration.
+- The three phantom tests fail against v0.7.0 code and pass here, so the fix is
+  covered rather than asserted. Test count 293 → 300.
+
+
 ## [0.7.0] — 2026-09-04
 
 Two identity bugs, reported from outside and confirmed by reproduction. Both

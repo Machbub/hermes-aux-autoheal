@@ -238,6 +238,111 @@ def test_a_same_model_spare_is_still_selected_after_normalising():
     assert ('ProvA', 'lead-model') not in idents
 
 
+# ------------------------------------------------------- phantom challengers
+
+def _phantom_pool():
+    """The pool shape that produced the churn on the reference install.
+
+    The primary's own origin also hosts several labels of a NEARBY model — one
+    tier away, widest context — so their merit key ``(1, 1, -1M)`` beats every
+    holder sitting on a narrower context. But no pass can seat them:
+
+    * pass 1 skips them — not the primary's model
+    * pass 2 skips them — the primary's origin is already used
+    * pass 3 skips them — one slot per model, and their model already has one
+
+    ``aa-peer``/``zz-peer`` are merit-tied siblings on one origin. The holder is
+    the one whose name sorts later, so an eviction refills with its sibling — and
+    that swap is the config write.
+    """
+    return [
+        _cand('ProvA', 'lead-thinking', base_url='https://relay-a.test/v1',
+              latency=3.5),
+        _cand('ProvB', 'lead', base_url='https://relay-a.test/v1', latency=3.7),
+        _cand('ProvC', 'lead', base_url='https://relay-a.test/v1', latency=3.9),
+        _cand('ProvE', 'aa-peer', base_url='https://relay-b.test/v1',
+              context=262_144, latency=1.2),
+        _cand('ProvE', 'zz-peer', base_url='https://relay-b.test/v1',
+              context=262_144, latency=0.9),
+    ]
+
+
+_PHANTOM_PRIMARY = ('ProvA', 'lead-thinking')
+_PHANTOM_INCUMBENT = (
+    _entry('ProvB', 'lead', 'https://relay-a.test/v1'),
+    _entry('ProvE', 'zz-peer', 'https://relay-b.test/v1'),
+)
+
+
+def test_an_unseatable_duplicate_does_not_evict_a_holder():
+    """Measured churn source: challengers that evict but can never be seated.
+
+    Before this fix pass 0 seated 1 of 4 slots on the reference install — the
+    chain was rebuilt from scratch every tick, so slot defence, the sticky
+    latency margin and the tie-break tail were all dead for chat.
+    """
+    chain = router.pick_chat_chain(router.rank(_phantom_pool()),
+                                   _PHANTOM_PRIMARY, 2, _PHANTOM_INCUMBENT)
+    assert _idents(chain) == [('ProvB', 'lead'), ('ProvE', 'zz-peer')], (
+        'holder evicted by a candidate no pass can seat')
+
+
+def test_the_phantom_eviction_does_not_write():
+    chain = router.pick_chat_chain(router.rank(_phantom_pool()),
+                                   _PHANTOM_PRIMARY, 2, _PHANTOM_INCUMBENT)
+    changed, why = router.chat_chain_needs_write(
+        list(_PHANTOM_INCUMBENT), [router.as_chat_entry(c) for c in chain])
+    assert not changed, f'stable pool rewrote the config: {why}'
+
+
+def test_a_seatable_challenger_on_a_new_origin_still_evicts():
+    """The fix must not turn slot defence into an absolute right."""
+    primary = _cand('A', 'lead')
+    weak = _cand('W', FLASH, base_url='https://weak.test/v1')
+    strong = _cand('S', FLAGSHIP, base_url='https://strong.test/v1')
+    on_disk = (_entry('W', FLASH, 'https://weak.test/v1'),)
+
+    chain = router.pick_chat_chain([primary, weak, strong],
+                                   ('A', 'lead'), 1, on_disk)
+    assert _idents(chain) == [('S', FLAGSHIP)]
+
+
+# ------------------------------------------------------------- grace holders
+
+def test_slot_zero_requires_a_live_model():
+    holder = _cand('P', 'some', ok=False)
+    holder['fail_streak'] = 1
+    assert router.holder_may_hold_slot(holder, 0) is False
+
+
+def test_a_mid_chain_holder_survives_one_strike():
+    """One failed probe is a grace strike, not a verdict."""
+    holder = _cand('P', 'some', ok=False)
+    holder['fail_streak'] = 1
+    assert router.holder_may_hold_slot(holder, 1) is True
+
+
+def test_a_demoted_holder_loses_its_slot():
+    holder = _cand('P', 'some', ok=False)
+    holder['fail_streak'] = 2
+    assert router.holder_may_hold_slot(holder, 1) is False
+
+
+def test_a_mid_chain_blip_does_not_rewrite_the_chain():
+    """The two-writes-per-blip pattern observed in a live log."""
+    pool = _phantom_pool()
+    for c in pool:
+        if (c['provider'], c['model']) == ('ProvE', 'zz-peer'):
+            c['ok_now'] = False
+            c['fail_streak'] = 1
+
+    chain = router.pick_chat_chain(router.rank(pool), _PHANTOM_PRIMARY, 2,
+                                   _PHANTOM_INCUMBENT)
+    changed, why = router.chat_chain_needs_write(
+        list(_PHANTOM_INCUMBENT), [router.as_chat_entry(c) for c in chain])
+    assert not changed, f'a single mid-chain blip rewrote the config: {why}'
+
+
 # ------------------------------------------------------- tiebreak stability
 
 def test_merit_ties_are_broken_by_name_not_latency():

@@ -331,6 +331,25 @@ rather than the full key: with the tail included, any merit-equal peer with an
 alphabetically earlier name displaced the incumbent, which defeated slot
 stickiness entirely.
 
+Eviction also asks whether the challenger could *actually take the slot*
+(`could_be_seated`), not merely whether it out-ranks the holder. Without that
+check the guard was decorative on any relay-shaped install: the primary's own
+origin usually also hosts several provider labels of a nearby model, each
+carrying merit `(1, tier±1, -1M)` — better than any holder on a narrower context
+— while no pass can seat them, since pass 1 wants the primary's model, pass 2
+wants an unused origin, and pass 3 allows one slot per model. Instrumented on the
+reference pool, pass 0 seated **1 of 4 slots**; the chain was rebuilt from
+scratch nearly every tick, which quietly disabled slot stickiness, the sticky
+latency margin and the tie-break tail for chat. Replays at blip rates measured
+from that install: **9.2% of ticks wrote before, 4.0% after**, and writes that
+*demoted* a slot fell from 36 to 2.
+
+A holder that just failed a probe keeps a mid-chain slot while it is inside its
+grace window (`holder_may_hold_slot`). `ok_now` false means `strike 1` of
+`--demote-streak`, not a verdict, and evicting on it cost two writes per blip —
+one to demote, one to restore. Slot 0 stays strict: it is tried first, so a
+suspect entry there costs a round-trip on every request until the next tick.
+
 The CLI applies it: `--apply` writes `fallback_providers` (top-level) in the
 same transaction as the auxiliary route, reading the chat primary from
 `model.provider` / `model.default` — which it never rewrites. `--chat-depth`
