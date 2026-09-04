@@ -11,6 +11,11 @@ task routes pointed at models that actually answer.
 
 Third-party project. Not affiliated with or endorsed by Nous Research.
 
+It exists because a long conversation died mid-compaction: the model named under
+`auxiliary.compression` had been retired weeks earlier, was still listed in the
+endpoint's `/v1/models`, and the two fallbacks behind it had gone stale the same
+way. Nothing re-checks that list — so this does, on a timer.
+
 ## The problem
 
 Hermes lets you pin a provider/model per auxiliary task (context compression,
@@ -192,6 +197,11 @@ yields to a better tier or wider context, and one model takes one slot no
 matter how many providers resell it. The worst churn source found wrote 151
 times in a 200-tick replay with nothing actually failing; after the fix, twice.
 
+Six churn sources were found this way, one fix made things measurably worse
+before it was replaced, and every rate is quoted with the window it was measured
+over — [STABILITY.md](STABILITY.md) has the replay tables, the attempts that
+failed, and how a churn fix gets verified here.
+
 ## How this differs from a proxy or router
 
 A router or proxy sits in the request path and decides per request: it
@@ -292,9 +302,10 @@ Worth knowing before you rely on it:
   gone at 12:03. This narrows the window; the `fallback_chain` is still what
   saves an in-flight call.
 - **A small probe cannot see a per-model quota wall.** Measured on a live
-  install: 244 `HTTP 429` responses in real traffic while the 4-token probe
-  returned `200 OK`. The probe is too small to trip a limit a real request
-  trips immediately — scheduled probing has a floor.
+  install: **441 `HTTP 429` responses in real traffic** on one model while the
+  4-token probe kept returning `200 OK`. The probe is too small to trip a limit
+  a real request trips immediately — scheduled probing has a floor. Paired
+  log evidence in [STABILITY.md](STABILITY.md#the-quota-wall-a-probe-cannot-see).
 - **It reacts per tick, never per request.** No mid-request failover, no retry
   policy, no traffic splitting.
 - **Probing costs tokens.** Four output tokens per model per TTL window. Small,
@@ -320,6 +331,12 @@ python -m pytest tests/ -q
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.
+
+The behaviours that are easy to regress are named individually, with the reason
+each test exists, in
+[STABILITY.md](STABILITY.md#behaviours-the-tests-pin) — along with the procedure
+for verifying a churn fix, which is replay against the released code, never a
+hand-built fixture.
 
 ## Credits
 
