@@ -136,7 +136,7 @@ python -m hermes_aux_autoheal.cli --help
 
 Install `ruamel.yaml` too if you keep comments in `config.yaml`. Without it the
 PyYAML fallback works but deletes every comment on write. See
-[Writing config.yaml safely](#writing-configyaml-safely).
+[Writing config safely](#writing-config-safely).
 
 ## Usage
 
@@ -216,7 +216,7 @@ tools. Use this when you want no extra process in front of your models, a
 config file you can still read, and a route that is correct on disk rather
 than corrected in flight.
 
-## Writing config.yaml safely
+## Writing config safely
 
 Hermes writes `config.yaml` through `atomic_yaml_write` under an in-process
 lock. Anything running **outside** the Hermes package — a cron job, a sync
