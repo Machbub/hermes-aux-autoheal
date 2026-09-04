@@ -126,6 +126,18 @@ endpoint exists.
 
 ## Install
 
+Tested against **Hermes Agent v0.20.6**, reading these config keys:
+
+| key | used for |
+|---|---|
+| `custom_providers` | which providers exist, their `base_url` and key env var |
+| `auxiliary.<task>` | the route this tool writes: `provider`, `model`, `fallback_chain` |
+| `model` / `provider` | your chosen chat model — read to rank spares, never overwritten |
+
+If your install nests these differently, `--dry-run` will say so before anything
+is written — it prints the route it would produce and exits without touching the
+file.
+
 ```bash
 pip install git+https://github.com/Machbub/hermes-aux-autoheal
 ```
