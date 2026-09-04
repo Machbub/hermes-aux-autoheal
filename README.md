@@ -39,11 +39,10 @@ auxiliary:
         model: other-model
 ```
 
-That config is static. Nothing ever re-checks it. Aggregator gateways retire
-models without warning, keys get revoked, providers go down — and the route
-keeps naming a corpse. You find out when a background task fails, which for
-compression means a conversation that stalls exactly when it grew long enough
-to need compacting.
+That config is static. Nothing ever re-checks it. Models get retired without
+warning, keys get revoked, providers go down — and the route keeps naming a
+corpse. You find out when a background task fails, which for compression means
+a conversation that stalls exactly when it grew long enough to need compacting.
 
 Hermes' `fallback_chain` is reactive: it moves on *after* a call fails. Nobody
 checks beforehand whether the names in the list are still real.
@@ -157,8 +156,7 @@ Probing rather than listing is the point. A typical rejection looks like this:
 
 The 503 is the case a listing-based check misses: the model was still
 advertised while no backend could serve it. That is a routing state, not a
-judgement about any vendor — aggregators multiplex changing upstream capacity
-and this is a normal consequence.
+judgement about any vendor.
 
 ## Relays and gateways
 
