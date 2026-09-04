@@ -336,6 +336,34 @@ same transaction as the auxiliary route, reading the chat primary from
 `model.provider` / `model.default` — which it never rewrites. `--chat-depth`
 sets the chain length.
 
+### Identity is normalised, and that is load-bearing
+
+Every comparison in this tool crosses a boundary: `config.yaml` is written by
+hand or by a dashboard, candidates come from a provider `/v1/models` listing or
+a SQLite table. The two sides disagree about spelling, so `ident_of` strips,
+lowercases, and reduces the model to its bare name before comparing.
+
+Without that, two things went wrong silently — no error, just the wrong
+outcome:
+
+- **The primary was offered as its own fallback.** Five of six real spellings
+  slipped past a raw tuple comparison: a provider prefix in the model name
+  (`bai/flagship-v2` vs `flagship-v2`), either field's case, stray whitespace,
+  an aggregator vendor slug. A chain whose first entry is the model that just
+  failed protects against nothing.
+- **Incumbency lookups missed.** `route_idents`, `primary_ident`,
+  `sticky_latency` and `choose_primary` all look candidates up by identity. A
+  miss disables latency stickiness and leaves the incumbent primary undefended,
+  and it is invisible: a lookup that finds nothing looks exactly like a
+  candidate that is genuinely new.
+
+Discovery draws the line in a different place, because it is answering a
+different question. A route's identity there is `(base_url, model, key)` — the
+credential included. Two labels fronting one relay with *different* keys are two
+routes with independent quotas, and collapsing them deleted the "same model,
+different key" spare that pass 1 selects first, before it could even be probed.
+Two labels sharing one key are still one route listed twice.
+
 ## Stability
 
 Probe-and-write on every tick is unstable in four different ways, and each needs

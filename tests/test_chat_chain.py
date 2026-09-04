@@ -187,7 +187,58 @@ def test_unknown_primary_origin_still_yields_cross_origin_spares():
     assert len(chain) == 2
 
 
-# --------------------------------------------------------- tiebreak stability
+# ------------------------------------------------------- primary self-exclusion
+
+@pytest.mark.parametrize('primary_spelling', [
+    'lead-model',                    # exact
+    'ProvA/lead-model',              # provider prefix, as a dashboard writes it
+    'Lead-Model',                    # case
+    'vendor/lead-model',             # aggregator vendor slug
+    ' lead-model ',                  # stray whitespace
+])
+def test_primary_never_enters_its_own_fallback_list(primary_spelling):
+    """The chain must exclude the primary however config.yaml spells it.
+
+    ``chat_primary`` comes from ``model.provider``/``model.default``; candidates
+    come from a provider listing or a SQLite table. The two disagree about
+    formatting, and a raw tuple comparison meant the primary was offered as its
+    own fallback — five of six real spellings leaked. A fallback list whose first
+    entry is the thing that just failed protects against nothing.
+    """
+    pool = [_cand('ProvA', 'lead-model'),
+            _cand('ProvB', 'peer-one'),
+            _cand('ProvC', 'peer-two')]
+    chain = router.pick_chat_chain(pool, ('ProvA', primary_spelling), 3)
+    assert router.ident_of({'provider': 'ProvA', 'model': 'lead-model'}) \
+        not in [router.ident_of(c) for c in chain]
+
+
+@pytest.mark.parametrize('provider_spelling', ['ProvA', 'prova', 'PROVA', ' ProvA '])
+def test_primary_provider_spelling_does_not_matter(provider_spelling):
+    pool = [_cand('ProvA', 'lead-model'), _cand('ProvB', 'peer-one')]
+    chain = router.pick_chat_chain(pool, (provider_spelling, 'lead-model'), 2)
+    assert router.ident_of({'provider': 'ProvA', 'model': 'lead-model'}) \
+        not in [router.ident_of(c) for c in chain]
+
+
+def test_a_same_model_spare_is_still_selected_after_normalising():
+    """Normalising must not swallow the pass-1 spare it exists to protect.
+
+    ``ident_of`` collapses vendor prefixes, so a different KEY serving the same
+    model must still read as a distinct candidate — otherwise the fix for the
+    self-match bug would delete the "same model, different key" spare, which is
+    the most valuable entry in the chain.
+    """
+    pool = [_cand('ProvA', 'lead-model'),
+            _cand('ProvA_spare', 'lead-model'),
+            _cand('ProvB', 'peer-one')]
+    chain = router.pick_chat_chain(pool, ('ProvA', 'ProvA/lead-model'), 3)
+    idents = [(c['provider'], c['model']) for c in chain]
+    assert ('ProvA_spare', 'lead-model') in idents, idents
+    assert ('ProvA', 'lead-model') not in idents
+
+
+# ------------------------------------------------------- tiebreak stability
 
 def test_merit_ties_are_broken_by_name_not_latency():
     """The churn source measured on the reference install: merit ties.

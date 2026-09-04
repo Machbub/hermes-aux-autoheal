@@ -5,6 +5,49 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-09-04
+
+Two identity bugs, reported from outside and confirmed by reproduction. Both
+were silent: nothing errored, the wrong thing simply happened. Together they
+disabled the chat chain's first pass — the one that covers the most common
+failure — while its unit tests stayed green, because the tests supplied
+already-consistent identities that real config never guarantees.
+
+### Fixed
+
+- **A spare key at a shared relay was deleted before it could be probed.**
+  `discovery.discover` deduped on `(base_url, model)`, so two provider labels
+  fronting one endpoint with *different credentials* collapsed to one candidate.
+  That is precisely the "same model, different key" spare `pick_chat_chain`
+  selects first, and the only kind that survives a `balance=0` or a `429` quota
+  pause — both properties of the credential, not the model. Identity is now
+  `(base_url, model, resolved_key)`. Two labels sharing one credential still
+  collapse (that is one route listed twice, and it is what lets a pinned entry's
+  `api_mode` win over the same model from a listing).
+- **The chat primary was offered as its own fallback.** `pick_chat_chain`
+  excluded it by raw tuple equality, but `chat_primary` comes from `config.yaml`
+  while candidates come from a provider listing or a SQLite table, and the two
+  disagree about spelling. Five of six real-world spellings leaked — provider
+  prefix in the model name, either field's case, stray whitespace, an aggregator
+  vendor slug. A fallback list whose first entry is the model that just failed
+  protects against nothing. `ident_of` now normalises: strip, lowercase, and
+  reduce the model to its bare name.
+- **Incumbency lookups silently missed for the same reason.** `route_idents`,
+  `primary_ident`, `sticky_latency`, `choose_primary`, `needs_write` and
+  `chat_chain_needs_write` all compared identities across that same boundary. A
+  miss there disables latency stickiness and leaves the incumbent primary
+  undefended — invisibly, since a lookup that finds nothing looks exactly like a
+  candidate that is genuinely new.
+
+### Notes
+
+`model_id` now shares `_norm_model` with `ident_of` so the two cannot drift.
+Normalising does **not** merge spare keys: a different credential serving the
+same model is still a distinct candidate, which is what keeps pass 1 working.
+
+11 new tests (293 total), including the five leaking spellings as a
+parametrised set and an assertion that the pass-1 spare survives normalisation.
+
 ## [0.6.2] — 2026-09-04
 
 The fifth churn source, and the first one that lived in the chat chain rather

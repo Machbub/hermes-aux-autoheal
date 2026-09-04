@@ -92,10 +92,48 @@ def tier_of(model):
 
 
 def ident_of(cand):
-    """The ``(provider, model)`` pair identifying a candidate or route entry."""
+    """The ``(provider, model)`` pair identifying a candidate or route entry.
+
+    NORMALISED, because the two sides of every comparison come from different
+    places and disagree about formatting. ``config.yaml`` is hand-edited or
+    written by a dashboard; candidates come from a provider listing or a SQLite
+    table. Comparing the raw pairs let the chat primary slip into its own
+    fallback list on any cosmetic difference — five of six real-world spellings
+    leaked, not just the ``provider/model`` form that was reported:
+
+    * ``'bai/flagship-v2'`` vs ``'flagship-v2'``  (provider prefix in model)
+    * ``'BAI'`` vs ``'bai'``                      (case)
+    * ``'Flagship-V2'`` vs ``'flagship-v2'``      (case)
+    * ``'bai '`` vs ``'bai'``                     (stray whitespace)
+    * ``'vendor/flagship-v2'`` vs ``'flagship-v2'`` (aggregator vendor slug)
+
+    So: strip, lowercase, and reduce the model to its bare name — the same
+    reduction :func:`model_id` performs, kept consistent on purpose. A vendor or
+    provider prefix identifies who resells the model, never which model it is.
+    """
     if not isinstance(cand, dict):
         return (None, None)
-    return (cand.get('provider'), cand.get('model'))
+    provider = cand.get('provider')
+    model = cand.get('model')
+    return (_norm_provider(provider), _norm_model(model))
+
+
+def _norm_provider(name):
+    """Provider label, comparison-ready. ``None`` stays ``None``."""
+    if name is None:
+        return None
+    return str(name).strip().lower()
+
+
+def _norm_model(name):
+    """Model identity, comparison-ready: bare name, no vendor prefix, lowercase.
+
+    ``None`` stays ``None`` so a missing field never compares equal to a present
+    one.
+    """
+    if name is None:
+        return None
+    return str(name).strip().rsplit('/', 1)[-1].lower()
 
 
 def rank_latency(cand):
@@ -127,6 +165,20 @@ def beats(challenger, holder, *, sticky_rel=DEFAULT_STICKY_REL,
     return rank_latency(challenger) <= threshold
 
 
+def _norm_ident(pair):
+    """Normalise a bare ``(provider, model)`` tuple the way :func:`ident_of` does.
+
+    Callers hand these in from config, from a test, or from another tool, and
+    they are compared against candidate identities. Normalising on receipt means
+    a caller cannot silently lose incumbency by spelling the pair differently —
+    a miss here is invisible: nothing errors, the incumbent is simply never
+    recognised and stickiness stops working.
+    """
+    if not pair or len(pair) != 2:
+        return pair
+    return (_norm_provider(pair[0]), _norm_model(pair[1]))
+
+
 def sticky_latency(cand, incumbents, *, sticky_rel=DEFAULT_STICKY_REL,
                    sticky_abs=DEFAULT_STICKY_ABS):
     """The latency a candidate is COMPARED at, not the one it measured.
@@ -134,9 +186,13 @@ def sticky_latency(cand, incumbents, *, sticky_rel=DEFAULT_STICKY_REL,
     A model already in the route is credited the displacement margin (the
     tighter of the two, so both must be cleared). Everything else is compared at
     its raw ranking latency.
+
+    ``incumbents`` is normalised on receipt: it usually comes from
+    :func:`route_idents`, but a caller may build it by hand, and an
+    un-normalised pair would just never match.
     """
     lat = rank_latency(cand)
-    if ident_of(cand) not in incumbents:
+    if ident_of(cand) not in {_norm_ident(i) for i in incumbents}:
         return lat
     return min(lat * (1.0 - sticky_rel), lat - sticky_abs)
 
@@ -155,6 +211,7 @@ def rank(candidates, incumbents=frozenset(), *,
     because two models already in the route are both discounted — see
     ``choose_primary``.
     """
+    incumbents = {_norm_ident(i) for i in incumbents}
     return sorted(
         candidates,
         key=lambda c: (
@@ -180,6 +237,10 @@ def choose_primary(ordered, incumbent=None, *, sticky_rel=DEFAULT_STICKY_REL,
 
     Returns None when nothing is verified alive — the caller must then leave the
     config alone rather than write a guess.
+
+    ``incumbent`` is normalised on receipt for the same reason as
+    :func:`sticky_latency`: an un-normalised pair silently fails to match and the
+    incumbent primary is never defended.
     """
     verified = [c for c in ordered if c.get('ok_now')]
     if not verified:
@@ -187,6 +248,7 @@ def choose_primary(ordered, incumbent=None, *, sticky_rel=DEFAULT_STICKY_REL,
     best = verified[0]
     if incumbent is None:
         return best
+    incumbent = _norm_ident(incumbent)
 
     holder = next((c for c in verified if ident_of(c) == incumbent), None)
     if holder is None or ident_of(holder) == ident_of(best):
@@ -202,26 +264,36 @@ def route_idents(current):
     Accepts the raw ``auxiliary.<task>`` mapping (possibly None or malformed)
     and never raises — a route that cannot be read simply yields no incumbents,
     which degrades to the pre-hysteresis ranking.
+
+    Pairs are normalised through :func:`ident_of` because they are compared
+    against candidate identities, and the two sides are spelled by different
+    systems. An un-normalised pair here silently disables latency stickiness:
+    every lookup misses, so no incumbent is ever recognised.
     """
     if not isinstance(current, dict):
         return frozenset()
     idents = set()
     if current.get('provider') and current.get('model'):
-        idents.add((current['provider'], current['model']))
+        idents.add(ident_of(current))
     chain = current.get('fallback_chain')
     if isinstance(chain, list):
         for entry in chain:
             if isinstance(entry, dict) and entry.get('provider') and entry.get('model'):
-                idents.add((entry['provider'], entry['model']))
+                idents.add(ident_of(entry))
     return frozenset(idents)
 
 
 def primary_ident(current):
-    """The ``(provider, model)`` currently in the primary slot, or None."""
+    """The ``(provider, model)`` currently in the primary slot, or None.
+
+    Normalised, for the same reason as :func:`route_idents`: this is compared
+    against candidates in :func:`choose_primary`, and a miss there means the
+    incumbent primary is never defended.
+    """
     if not isinstance(current, dict):
         return None
     if current.get('provider') and current.get('model'):
-        return (current['provider'], current['model'])
+        return ident_of(current)
     return None
 
 
@@ -248,9 +320,10 @@ def model_id(cand):
     """Identity of the MODEL behind a candidate, ignoring who resells it.
 
     Compared on the bare name, so ``vendor/model`` from one aggregator and
-    ``model`` from another collapse to the same identity.
+    ``model`` from another collapse to the same identity. Shares
+    :func:`_norm_model` with :func:`ident_of` so the two can never drift apart.
     """
-    return (cand.get('model') or '').rsplit('/', 1)[-1].lower()
+    return _norm_model(cand.get('model')) or ''
 
 
 def outranks_for_slot(challenger, holder):
@@ -463,13 +536,18 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
     """
 
     def ident(c):
-        return (c.get('provider'), c.get('model'))
+        return ident_of(c)
 
     def origin(c):
         return (c.get('base_url') or '').split('//')[-1].split('/')[0].lower()
 
-    primary_ident = tuple(chat_primary)
-    primary_model = primary_ident[1].rsplit('/', 1)[-1].lower()
+    # Normalised, because ``chat_primary`` comes from config.yaml while the
+    # candidates come from a provider listing or a SQLite table, and the two
+    # disagree about spelling. See :func:`ident_of`: comparing raw pairs let the
+    # primary into its own fallback list on any cosmetic difference.
+    primary_ident = ident_of({'provider': chat_primary[0],
+                              'model': chat_primary[1]})
+    primary_model = _norm_model(chat_primary[1])
 
     # The primary's own tier and origin, when it is in the pool. Cross-origin
     # means "not this host", so an unknown primary origin makes every host cross.
@@ -607,12 +685,11 @@ def chat_chain_needs_write(current, desired):
     if len(current) != len(desired):
         return True, 'chat chain length changed'
 
-    def ident(e):
-        return (e.get('provider'), e.get('model')) if isinstance(e, dict) else (None, None)
-
-    if {ident(e) for e in current} != {ident(e) for e in desired}:
+    # ident_of, so a cosmetic respelling on disk (case, vendor prefix, stray
+    # space) does not read as a membership change and trigger a pointless write.
+    if {ident_of(e) for e in current} != {ident_of(e) for e in desired}:
         return True, 'chat chain members changed'
-    if current and ident(current[0]) != ident(desired[0]):
+    if current and ident_of(current[0]) != ident_of(desired[0]):
         return True, 'chat chain[0] changed'
     return False, 'equivalent'
 
@@ -674,7 +751,7 @@ def needs_write(current, desired):
 
     def ident(e):
         if isinstance(e, dict):
-            return (e.get('provider'), e.get('model'))
+            return ident_of(e)
         return (None, None)
 
     if {ident(e) for e in cur_chain} != {ident(e) for e in new_chain}:

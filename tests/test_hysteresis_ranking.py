@@ -210,8 +210,26 @@ def test_route_idents_collects_primary_and_chain():
         ],
     }
     assert router.route_idents(current) == frozenset({
-        ('P', 'primary'), ('Q', 'spare-1'), ('R', 'spare-2'),
+        ('p', 'primary'), ('q', 'spare-1'), ('r', 'spare-2'),
     })
+
+
+def test_route_idents_normalises_so_lookups_actually_match():
+    """The contract: an ident from config must match the same candidate.
+
+    These sets are compared against ``ident_of(candidate)``, and the two sides
+    are written by different systems — config.yaml by hand or by a dashboard,
+    candidates by a provider listing or a SQLite table. Asserting the raw
+    spelling was a snapshot of the bug: every entry below used to be a lookup
+    miss, which silently disabled stickiness rather than erroring.
+    """
+    current = {
+        'provider': 'Alpha', 'model': 'alpha/lead-model',
+        'fallback_chain': [{'provider': ' BETA ', 'model': 'Vendor/Spare-One'}],
+    }
+    idents = router.route_idents(current)
+    assert router.ident_of(cand('alpha', 'lead-model', 1.0)) in idents
+    assert router.ident_of(cand('beta', 'spare-one', 1.0)) in idents
 
 
 @pytest.mark.parametrize('current', [
@@ -239,7 +257,7 @@ def test_route_idents_ignores_incomplete_chain_entries():
         ],
     }
     assert router.route_idents(current) == frozenset({
-        ('P', 'primary'), ('R', 'ok'),
+        ('p', 'primary'), ('r', 'ok'),
     })
 
 
@@ -284,7 +302,18 @@ def test_build_then_needs_write_reports_no_change_for_jitter():
 
 
 def test_primary_ident_reads_the_slot():
-    assert router.primary_ident({'provider': 'P', 'model': 'm'}) == ('P', 'm')
+    assert router.primary_ident({'provider': 'P', 'model': 'm'}) == ('p', 'm')
+
+
+def test_primary_ident_normalises_so_choose_primary_can_match():
+    """A prefixed or differently-cased primary must still defend its slot.
+
+    ``choose_primary`` looks the incumbent up by identity; before normalising,
+    ``model.default: 'alpha/lead-model'`` never matched candidate
+    ``'lead-model'``, so the incumbent primary went undefended on every tick.
+    """
+    got = router.primary_ident({'provider': ' Alpha ', 'model': 'alpha/Lead-Model'})
+    assert got == router.ident_of(cand('alpha', 'lead-model', 1.0))
 
 
 @pytest.mark.parametrize('current', [None, {}, 'nope', {'provider': 'P'}, {'model': 'm'}])
