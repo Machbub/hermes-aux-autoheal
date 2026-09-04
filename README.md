@@ -281,59 +281,29 @@ you pinned.
   endpoint is four models and one outage away from empty. See
   [Relays and gateways](#relays-and-gateways).
 
-## Versus a router or gateway
+## How this differs from a proxy or router
 
-Routers like [OpenRouter](https://openrouter.ai) (hosted),
-[9Router](https://9router.com) and [LiteLLM](https://docs.litellm.ai) (both
-self-hosted proxies) solve an overlapping problem, and it is worth being precise
-about the overlap, because the difference is not a feature list — it is **where
-the decision lives**.
+A router or proxy sits in the request path and decides per request: it
+intercepts traffic and moves a failing call to a live model. This tool sits
+outside the request path and decides per tick: it probes what you configured,
+then rewrites `config.yaml` so the route is correct on disk. Neither replaces
+the other.
 
-A router decides per request, inside the request. This decides per tick, then
-gets out of the way. Everything else follows from that.
+- A proxy is strictly better at detection — real traffic sees the 429 that a
+  probe cannot, and it reacts in one request rather than one tick.
+- A proxy cannot fix a stale config. Hermes walks `fallback_providers` and
+  `auxiliary.<task>.fallback_chain` natively; if those entries name a model
+  that is gone, the proxy only sees traffic never reaching it. Keeping those
+  names real is what this tool exists for.
+- They compose. Point a Hermes provider at a local proxy and this tool will
+  happily probe and rank the models behind it. Most of what this tool decides
+  then collapses into one `base_url`, and the routing intelligence moves into
+  the proxy — which may be exactly what you want.
 
-| | this | 9Router / LiteLLM | OpenRouter |
-|---|---|---|---|
-| in the request path | no | yes, a local process | yes, their infrastructure |
-| what it changes | your `config.yaml` | nothing — it intercepts | nothing — it intercepts |
-| failure signal | scheduled probe, 4 tokens | your real traffic, plus background health checks | fleet-wide telemetry, 30s outage window |
-| reacts within | one tick (5 min default) | one request | mid-request |
-| mid-request failover | no — Hermes's own chain does that | yes | yes |
-| if it stops running | route keeps working, goes stale | all traffic stops | all traffic stops |
-| API keys | stay in your `.env` | stay on your box | theirs, or BYOK for a fee |
-| prompt content | never leaves the machine | never leaves the machine | passes through them |
-| extra moving parts | none | one process, one port | one network hop |
-| cost | your own keys | your own keys | their margin |
-| quota / spend dashboard | no | yes | yes |
-| catalogue | whatever you configured | 60+ providers, OAuth pooling | 400+ models, 25+ free |
-| flap control | hysteresis, median, stickiness, per-slot grace | `cooldown_time` + `allowed_fails` | inverse-square price weighting |
-
-Three things that table understates:
-
-- **A router is strictly better at detection.** Real traffic sees the 429 that a
-  4-token probe cannot, and a 30-second window beats a five-minute tick. If your
-  priority is never sending a request to a dead endpoint, the request path is
-  where that belongs, and no amount of probing catches up.
-- **A router cannot fix your config.** Hermes walks `fallback_providers` and
-  `auxiliary.<task>.fallback_chain` natively. If those entries name a model that
-  has been unroutable for a week, a proxy does not know and does not care —
-  you simply never reach it. That specific failure is the one this tool exists
-  for, and no proxy addresses it.
-- **They compose.** Point a Hermes provider at a local 9Router or LiteLLM
-  instance and this tool will happily probe and rank the models behind it. When
-  you do, most of what this tool decides collapses into one `base_url`, and the
-  routing intelligence moves into the proxy — which may be exactly what you
-  want.
-
-**Pick a router when** you want per-request failover, a spend dashboard, quota
-pooling across subscriptions, or one endpoint for many tools. **Pick this when**
-you want no extra process in front of your models, keys and prompts that never
-leave the box, a config file you can still read, and a route that is correct on
-disk rather than corrected in flight — and you can live with a five-minute
-reaction time.
-
-The honest summary: this is not a router and does not compete with one. It is a
-janitor for a config file that would otherwise quietly rot.
+Use a proxy when you want per-request failover and a single endpoint for many
+tools. Use this when you want no extra process in front of your models, a
+config file you can still read, and a route that is correct on disk rather
+than corrected in flight.
 
 ## Install
 
