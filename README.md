@@ -765,13 +765,13 @@ does not cover:
 python -m pytest tests/ -q
 ```
 
-303 tests, run against both YAML backends — with and without `ruamel.yaml`,
+311 tests, run against both YAML backends — with and without `ruamel.yaml`,
 since the fallback path is what most people hit first. No network: probes and
 the `/v1/models` listing are stubbed, but discovery, the health state machine,
 route building, and config writing all run against real files. The config writer
 suite includes a genuine three-process write race.
 
-Six behaviours worth naming, because they are easy to regress:
+Seven behaviours worth naming, because they are easy to regress:
 
 - **Sibling providers are probed separately.** Several providers may share one
   `base_url` (one aggregator, different keys and quotas), so the health cache is
@@ -797,6 +797,13 @@ Six behaviours worth naming, because they are easy to regress:
   (`holder_may_hold_slot`, same rule in both chains since v0.7.2). The grace
   check is indexed by the slot the holder would OCCUPY, so promotion into the
   front slot faces the front slot's bar.
+- **The chat chain still knows where its primary lives when the primary is
+  down.** Origin diversity is computed against the pool *before* health
+  filtering, because the primary leaves the filtered pool exactly when its host
+  becomes unreachable — and that is when a spare must not be placed on the same
+  host. Losing that one fact put a dead-host entry at `fallback_providers[0]`,
+  which Hermes tries first, and no later tick could correct it. Pinned at three
+  chain depths plus an end-to-end run with the primary failing its probe.
 
 ## Changelog
 

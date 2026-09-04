@@ -548,7 +548,8 @@ def holder_may_hold_slot(holder, slot_index, *,
     return holder.get('fail_streak', 0) < demote_streak
 
 
-def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
+def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=(),
+                    all_candidates=()):
     """Choose the CHAT model's fallbacks (top-level ``fallback_providers``).
 
     Deliberately NOT :func:`pick_chain`. That function dedupes by model, because
@@ -576,6 +577,16 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
 
     ``chat_primary`` is the ``(provider, model)`` from ``model.default`` and is
     never placed in its own fallback list.
+
+    ``all_candidates`` is the UNFILTERED pool, before health filtering. It exists
+    for one reason: ``ordered`` is built from the healthy candidates, so the
+    primary drops out of it exactly when the primary is unhealthy — the moment
+    its spares matter most. The only thing lost with it is its ORIGIN, and
+    ``primary_origin`` is what keeps a spare off the host that just died. Without
+    it that host reads as cross-origin and pass 2 seats it at slot 0, so Hermes
+    walks into the corpse first on every request. Passing the unfiltered pool
+    recovers the origin; the record is never seatable, because every use below
+    filters on ``ident(c) != primary_ident``.
     """
 
     def ident(c):
@@ -594,9 +605,11 @@ def pick_chat_chain(ordered, chat_primary, depth, incumbent_chain=()):
 
     # The primary's own tier and origin, when it is in the pool. Cross-origin
     # means "not this host", so an unknown primary origin makes every host cross.
+    # Fall back to the unfiltered pool: health filtering removes the primary
+    # precisely when its origin died, which is when this value matters.
     primary_tier = tier_of(primary_ident[1])
     primary_origin = ''
-    for c in ordered:
+    for c in list(ordered) + list(all_candidates):
         if ident(c) == primary_ident:
             primary_origin = origin(c)
             break

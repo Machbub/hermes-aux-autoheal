@@ -444,6 +444,83 @@ def test_missing_chain_requires_a_write():
     assert changed is True and 'missing' in reason
 
 
+# ------------------------------------------------- primary absent from the pool
+
+def test_the_dead_host_is_not_offered_first_when_the_primary_falls_out():
+    """`ordered` is health-filtered, so the primary leaves it exactly when its
+    own origin dies. The origin is the one thing the picker still needs from it:
+    without it that host reads as cross-origin, pass 2 seats it at slot 0, and
+    Hermes walks into the corpse on the FIRST attempt of every request.
+
+    Shape derived from the live incident (Cloudflare 522 taking every label on
+    one relay), reduced to the smallest pool that reaches pass 2: no candidate
+    reuses the primary's model, so pass 1 seats nothing and pass 2 decides.
+    """
+    dead, live = 'https://relay-a.test/v1', 'https://relay-b.test/v1'
+    primary = _cand('ProvA', 'lead-model', base_url=dead)
+    peer_on_dead = _cand('ProvB', 'peer-model', base_url=dead, latency=2.0)
+    flash_on_live = _cand('ProvC', FLASH, base_url=live, latency=1.0)
+
+    healthy_pool = router.rank([primary, peer_on_dead, flash_on_live])
+    reference = router.pick_chat_chain(healthy_pool, ('ProvA', 'lead-model'), 2)
+
+    # The primary failed its probe, so health.evaluate dropped it.
+    probed = router.rank([peer_on_dead, flash_on_live])
+    picked = router.pick_chat_chain(
+        probed, ('ProvA', 'lead-model'), 2,
+        all_candidates=[primary, peer_on_dead, flash_on_live])
+
+    assert picked[0]['base_url'] == reference[0]['base_url'] == live, (
+        f'slot 0 landed on the dead host: {_idents(picked)}')
+
+
+@pytest.mark.parametrize('depth', [1, 2, 3])
+def test_slot_order_is_unchanged_by_the_primary_leaving_the_pool(depth):
+    """The chain must not depend on whether the primary passed its own probe."""
+    dead, live = 'https://relay-a.test/v1', 'https://relay-b.test/v1'
+    primary = _cand('ProvA', 'lead-model', base_url=dead)
+    pool = [_cand('ProvB', 'peer-model', base_url=dead, latency=2.0),
+            _cand('ProvC', FLASH, base_url=live, latency=1.0)]
+
+    with_primary = router.pick_chat_chain(
+        router.rank([primary] + pool), ('ProvA', 'lead-model'), depth)
+    without = router.pick_chat_chain(
+        router.rank(pool), ('ProvA', 'lead-model'), depth,
+        all_candidates=[primary] + pool)
+
+    assert _idents(with_primary) == _idents(without)
+
+
+def test_the_recovered_primary_record_is_never_seated():
+    """all_candidates carries the primary itself; it must stay out of its own
+    fallback list, whatever spelling config.yaml used."""
+    dead = 'https://relay-a.test/v1'
+    primary = _cand('ProvA', 'Lead-Model', base_url=dead)
+    spare = _cand('ProvB', FLASH, base_url='https://relay-b.test/v1')
+
+    chain = router.pick_chat_chain(
+        router.rank([spare]), ('prova', 'lead-model'), 3,
+        all_candidates=[primary, spare])
+
+    assert ('ProvA', 'Lead-Model') not in _idents(chain)
+
+
+def test_an_unconfigured_primary_still_gets_a_chain():
+    """model.default naming a provider that is not configured at all: origin
+    diversity degrades to 'every host is cross-origin', but spares are still
+    worth writing — that list is what Hermes falls back to."""
+    pool = [_cand('ProvB', FLASH), _cand('ProvC', 'other-model')]
+    chain = router.pick_chat_chain(
+        router.rank(pool), ('Ghost', 'ghost-model'), 2, all_candidates=pool)
+    assert len(chain) == 2
+
+
+def test_all_candidates_defaults_to_empty():
+    """Callers that never pass it keep the old behaviour, not a TypeError."""
+    pool = [_cand('ProvB', FLASH)]
+    assert router.pick_chat_chain(router.rank(pool), ('ProvA', 'lead'), 1)
+
+
 # ---------------------------------------------------------------------- shapes
 
 def test_as_chat_entry_shape_matches_what_hermes_reads():
