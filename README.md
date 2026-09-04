@@ -261,10 +261,12 @@ leaves the document byte-identical.
 | `--no-discover-models` | off | never ask a provider for its `/v1/models` listing |
 | `--max-discovered` | 25 | cap on models taken from one provider listing |
 | `--chain-depth` | 3 | fallback entries to keep |
+| `--chat-depth` | 4 | entries to keep in the chat model's `fallback_providers` |
 | `--call-timeout` | 300 | timeout written into each route entry |
 | `--probe-timeout` | 45 | health probe timeout |
 | `--min-context` | 0 | skip models with a known window below this |
 | `--ttl` | 600 | reuse cached probe results for this long |
+| `--cache` | `$HERMES_HOME/.aux_autoheal_health.json` | health cache path |
 | `--demote-streak` | 2 | ambiguous failures before eviction |
 | `--promote-streak` | 2 | passes before a down model is trusted |
 | `--sticky-rel` | 0.30 | fraction faster a challenger must be to displace |
