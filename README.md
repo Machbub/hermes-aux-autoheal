@@ -684,7 +684,11 @@ Six behaviours worth naming, because they are easy to regress:
 - **A chain slot holder is not evicted by latency.** Both directions of a real
   median crossing are pinned, because a guard that only holds in the ordering it
   was written against is not a guard. A holder still loses its slot to a better
-  tier or a wider context window, and always loses it when it fails a probe.
+  tier or a wider context window, and it always loses `chain[0]` when it fails a
+  probe — further down the chain it rides out its grace window instead
+  (`holder_may_hold_slot`, same rule in both chains since v0.7.2). The grace
+  check is indexed by the slot the holder would OCCUPY, so promotion into the
+  front slot faces the front slot's bar.
 
 ## Changelog
 

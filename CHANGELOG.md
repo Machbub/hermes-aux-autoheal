@@ -5,6 +5,46 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] — 2026-09-04
+
+The v0.7.1 grace fix went into the chat chain only. `pick_chain` (compression)
+kept the strict rule, so the same churn source was still live in the other half
+of the file — asked about from outside, confirmed by measurement.
+
+### Fixed
+
+- **A compression chain slot was surrendered on a single failed probe.**
+  `pick_chain`'s pass 0 still dropped any holder with `ok_now` false, at every
+  slot index, while `pick_chat_chain` had moved to `holder_may_hold_slot` in
+  v0.7.1. `ok_now` false means `strike 1/--demote-streak` and the candidate is
+  still eligible; evicting on it cost two writes per blip, one to demote and one
+  to restore on recovery.
+
+  Measured over 400-tick replays of a live compression pool at per-model blip
+  rates taken from that install's logs, five seeds, driven through the real
+  `needs_write` and `choose_primary` paths: **14.1% of ticks wrote before, 8.9%
+  after**. Live observation over a clean 108-tick window was 10.2%, so the replay
+  is in range. This was the larger of the two remaining churn sources — 11
+  compression writes against 7 chat-chain writes in the same window.
+
+  Slot 0 stays strict, and the check is indexed by the slot the holder would
+  **occupy** rather than its position on disk: when slot 0's holder is evicted,
+  the slot-1 holder is being promoted to the front and has to meet the front
+  slot's bar. A test pins that, because getting it backwards would quietly let a
+  blipped model reach `chain[0]` whenever the entry ahead of it died.
+
+### Notes
+
+- `pick_chain` does **not** need `could_be_seated`. Its pass-0 eviction test
+  already filters on `model_id(c) not in seen_models`, which is pass 2's
+  condition and therefore the weakest seating bar in that function — so every
+  challenger it counts can actually take the slot it frees. That was incidental,
+  not designed, so it is now written down: if the dedup rule changes, re-derive
+  the filter from whatever the weakest seating pass then accepts. Verified by
+  construction, not by reading — an unseatable duplicate does not evict.
+- Test count 300 → 303 (repo), 87 → 90 (live regression suite).
+
+
 ## [0.7.1] — 2026-09-04
 
 The chat chain's slot defence never ran. Found by measuring writes on a live
