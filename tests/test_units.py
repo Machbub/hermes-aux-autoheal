@@ -9,7 +9,32 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import hermes_aux_autoheal
 from hermes_aux_autoheal import discovery, health, router
+
+
+# --------------------------------------------------------------- packaging
+def test_declared_version_matches_the_package_version():
+    """Two places name the version; they drifted for five releases.
+
+    An invariant, not a snapshot: it asserts the two sources AGREE, so it never
+    needs editing on a bump. `pip show` reads pyproject and `__version__` is
+    what a bug report quotes — disagreement makes every report ambiguous.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'pyproject.toml'), encoding='utf-8') as f:
+        declared = [line.split('=', 1)[1].strip().strip('"\'')
+                    for line in f
+                    if line.startswith('version')]
+    assert declared, 'pyproject.toml declares no version'
+    assert declared[0] == hermes_aux_autoheal.__version__
+
+
+def test_every_public_module_in_all_is_importable():
+    """`__all__` listing a module that does not import is a broken star-import."""
+    import importlib
+    for name in hermes_aux_autoheal.__all__:
+        importlib.import_module(f'hermes_aux_autoheal.{name}')
 
 
 # --------------------------------------------------------------- discovery
