@@ -30,7 +30,9 @@ def build_parser():
         prog='hermes-aux-autoheal',
         description='Keep a Hermes auxiliary task routed to models that answer.')
     p.add_argument('--task', default='compression',
-                   help='auxiliary task to heal (default: compression)')
+                   help='auxiliary task to heal (default: compression; '
+                        '"vision" probes with a real image so text-only '
+                        'models are never routed for it)')
     p.add_argument('--apply', action='store_true',
                    help='write the route (default is a dry run)')
     p.add_argument('--verbose', '-v', action='store_true',
@@ -149,7 +151,8 @@ def main(argv=None):
         demote_streak=args.demote_streak,
         promote_streak=args.promote_streak,
         latency_window=args.latency_window,
-        context_lookup=ctx_lookup)
+        context_lookup=ctx_lookup,
+        task=args.task)
     cache.save()
 
     for cand, why in rejected:

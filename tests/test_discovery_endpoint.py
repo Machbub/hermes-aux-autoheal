@@ -177,7 +177,7 @@ def test_empty_listing_is_reported(monkeypatch):
 
 @pytest.mark.parametrize('mid', [
     'claude-sonnet-4-6', 'gpt-5.2-codex', 'gemini-3-flash', 'glm-5-air',
-    'deepseek-v4', 'qwen3-coder-plus', 'some-30b-instruct',
+    'chat-model-v4', 'qwen3-coder-plus', 'some-30b-instruct',
 ])
 def test_chat_models_pass(mid):
     assert discovery.is_chat_model(mid)

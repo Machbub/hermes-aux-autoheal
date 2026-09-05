@@ -133,7 +133,7 @@ def test_evaluate_probes_each_sibling_separately(tmp_path, monkeypatch):
     """One dead key among siblings must not condemn the others."""
     calls = []
 
-    def fake_probe(base_url, model, api_key, timeout=None):
+    def fake_probe(base_url, model, api_key, timeout=None, task='compression'):
         calls.append((base_url, model, api_key))
         # ProviderB's key is the broken one.
         if api_key == 'dead':

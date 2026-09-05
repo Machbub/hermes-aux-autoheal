@@ -246,9 +246,40 @@ ticks. This is not a bug to be fixed; it is the floor on what a scheduled probe
 can detect. A proxy in the request path sees this and this tool does not — which
 is exactly why the two compose rather than compete.
 
+## A text probe cannot certify a vision route
+
+The plain `'ping'` probe proves a model answers text. It proves nothing about
+images — and a vision route built from text-verified models fails on the first
+image the user sends, then keeps failing, because the failure is a capability
+mismatch, not an outage.
+
+Observed on the reference install: the chat model was switched to a text-only
+model (via the dashboard), `auxiliary.vision` was unset, and every image
+request then hit that model. The provider refused the payload with
+`400 Model do not support image input`; the error is *not* one of the
+capability classes Hermes' auxiliary client matches, so its fallback chain
+never engaged and `vision_analyze` died per-image. Three failure modes stacked
+in one symptom:
+
+1. **Vision routed by default to the chat model** — the backend changes every
+   time the user switches chat models, with no warning that the new one is
+   text-only.
+2. **The text probe certified text-only models as healthy** — they answered
+   `'ping'` fine.
+3. **The 400 was not classified as fallback-worthy** by the auxiliary client,
+   so even a configured `fallback_chain` was never consulted.
+
+The fix has two halves. The tool half is this release: the vision probe carries
+a real image (1x1 PNG), the `400` capability rejection is a permanent verdict,
+and the health cache is scoped per task so a text-probe verdict cannot leak
+into the vision route. The Hermes half is out of this repo's hands: routing a
+text-only chat model to vision, and not classifying the resulting 400, are
+behaviour in the auxiliary client — this tool works around them by never
+letting a text-only model into the route in the first place.
+
 ## Behaviours the tests pin
 
-311 tests, run against both YAML backends — with and without `ruamel.yaml`, since
+328 tests, run against both YAML backends — with and without `ruamel.yaml`, since
 the fallback path is what most people hit first. No network: probes and the
 `/v1/models` listing are stubbed, but discovery, the health state machine, route
 building and config writing all run against real files, including a genuine
@@ -285,6 +316,11 @@ These are the ones that are easy to regress:
   host. Losing that one fact put a dead-host entry at `fallback_providers[0]`,
   which Hermes tries first, and no later tick could correct it. Stable-and-wrong
   is harder to spot than flapping.
+- **A text-probe verdict never routes a vision chain.** The vision probe is a
+  real image payload, the `400` capability rejection is permanent, and the
+  cache key carries the task — so a model verified healthy on text cannot
+  inherit that verdict for images, and a model demoted for refusing images
+  cannot be saved by a later text-probe pass.
 
 ## How a churn fix gets verified here
 

@@ -75,7 +75,8 @@ def home(tmp_path, monkeypatch):
 
 def fake_probe(alive, *, latency=1.0):
     """Probe stub: models in ``alive`` answer, everything else 503s."""
-    def _probe(base_url, model, api_key, *, timeout=None, user_agent=None):
+    def _probe(base_url, model, api_key, *, timeout=None, user_agent=None,
+               task='compression'):
         if model in alive:
             return True, latency, ''
         return False, 0.1, 'HTTP 503 {"error":{"code":"model_not_found"}}'
@@ -192,7 +193,8 @@ def test_hysteresis_keeps_flaky_model_out_of_primary(home, monkeypatch):
     first = read_cfg(home)['auxiliary']['compression']['model']
 
     # Now the winner starts timing out (ambiguous), everything else fine.
-    def flaky(base_url, model, api_key, *, timeout=None, user_agent=None):
+    def flaky(base_url, model, api_key, *, timeout=None, user_agent=None,
+              task='compression'):
         if model == first:
             return False, 45.0, 'timeout: read timed out'
         if model in {'alpha-flash', 'beta-mini'}:
@@ -213,7 +215,8 @@ def test_permanent_failure_evicts_immediately(home, monkeypatch):
                         fake_probe({'alpha-flash', 'alpha-reasoner', 'beta-mini'}))
     cli.main(['--task', 'compression', '--apply'])
 
-    def gone(base_url, model, api_key, *, timeout=None, user_agent=None):
+    def gone(base_url, model, api_key, *, timeout=None, user_agent=None,
+             task='compression'):
         if model == 'alpha-flash':
             return False, 0.1, 'HTTP 404 model does not exist'
         if model in {'alpha-reasoner', 'beta-mini'}:

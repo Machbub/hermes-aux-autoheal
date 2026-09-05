@@ -5,6 +5,45 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-09-05
+
+`--task vision` now heals `auxiliary.vision` with a probe that actually tests
+vision — a text-only model can no longer be certified into a vision route.
+
+### Added
+
+- **Vision-aware probe.** `--task vision` sends a 1x1 PNG in the probe
+  payload. A model that accepts images answers normally; a text-only model
+  refuses with `400 Model do not support image input`, which is now classified
+  as a **permanent** verdict and demoted on the first strike.
+- **Per-task health-cache scoping.** `HealthCache.key` carries the task, so a
+  verdict earned on the text probe (compression) can never be read back by the
+  vision route, and vice versa. Legacy cache keys migrate into the running
+  task's scope.
+- **`probe_payload(model, task=...)`** as the single source of the probe body;
+  unknown tasks degrade to the text probe.
+- Docs: README "Vision routes" section, STABILITY "A text probe cannot certify
+  a vision route", limits note on multimodal probe cost.
+
+### Fixed
+
+- A text-only model that passed the text probe was eligible for a vision
+  route, guaranteeing a `400 Model do not support image input` on the first
+  image — and the error is not classified as fallback-worthy by Hermes'
+  auxiliary client, so the freshly-written `fallback_chain` was never
+  consulted. Root causes are in Hermes' auxiliary client; this release works
+  around both by never letting a text-only model into the route.
+- Existing test probe stubs now accept the `task` kwarg threaded through
+  `health.evaluate`.
+
+### Tests
+
+- 17 new tests (14 probe/classification/cache + 3 CLI end-to-end): payload
+  shapes, capability-400 permanence, first-strike demotion, wire-level image
+  payload, per-task cache isolation, migration scoping, and a full
+  `--task vision --apply` run that excludes a text-only model while the same
+  model remains eligible for `compression`.
+
 ## [0.7.3] — 2026-09-04
 
 The chat chain lost track of which host its primary lived on at exactly the

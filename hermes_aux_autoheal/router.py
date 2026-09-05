@@ -103,10 +103,10 @@ def ident_of(cand):
     fallback list on any cosmetic difference — five of six real-world spellings
     leaked, not just the ``provider/model`` form that was reported:
 
-    * ``'bai/flagship-v2'`` vs ``'flagship-v2'``  (provider prefix in model)
-    * ``'BAI'`` vs ``'bai'``                      (case)
+    * ``'vendor/flagship-v2'`` vs ``'flagship-v2'``  (provider prefix in model)
+    * ``'PROVIDERX'`` vs ``'providerx'``          (case)
     * ``'Flagship-V2'`` vs ``'flagship-v2'``      (case)
-    * ``'bai '`` vs ``'bai'``                     (stray whitespace)
+    * ``'vendor '`` vs ``'vendor'``               (stray whitespace)
     * ``'vendor/flagship-v2'`` vs ``'flagship-v2'`` (aggregator vendor slug)
 
     So: strip, lowercase, and reduce the model to its bare name — the same

@@ -40,7 +40,9 @@ PERMANENT_FAIL_PAT = re.compile(
     r'(model_not_found|does not exist|no available channel|no such model'
     r'|unknown model|not a valid model|invalid model|invalid_request_error'
     r'|unauthorized|invalid api key|permission denied'
-    r'|account is not authorized)',
+    r'|account is not authorized'
+    r'|do not support image|does not support images?'
+    r'|image_url[^\n]*expected|only text[^\n]*allowed)',
     re.I,
 )
 # 400 bad request, 401/403 credential, 404 missing. 429 and 5xx are deliberately
@@ -62,8 +64,33 @@ def failure_kind(err):
     return 'ambiguous'
 
 
+# One 1x1 PNG. Small enough to be noise in any request, real enough that a
+# text-only model refuses it — the whole point of probing vision with an image.
+# (data URL of a 1x1 transparent pixel)
+VISION_PROBE_IMAGE = (
+    'data:image/png;base64,'
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+)
+
+
+def probe_payload(model, *, task='compression'):
+    """Build the probe body for one task.
+
+    Text tasks probe with a plain string. Vision probes with a real image:
+    ``content`` becomes the multimodal array. A text-only model answers the
+    text probe with a 200 and sails past it; it refuses the image payload with
+    a 400, which :func:`failure_kind` classifies as permanent, so it is
+    demoted on the first strike and never routed for vision.
+    """
+    if task == 'vision':
+        return [{'type': 'text', 'text': 'ping'},
+                {'type': 'image_url',
+                 'image_url': {'url': VISION_PROBE_IMAGE}}]
+    return 'ping'
+
+
 def probe(base_url, model, api_key, *, timeout=DEFAULT_PROBE_TIMEOUT,
-          user_agent='hermes-aux-autoheal'):
+          user_agent='hermes-aux-autoheal', task='compression'):
     """One tiny real completion. Returns ``(ok, latency_seconds, error_text)``.
 
     A 200 response with no ``choices`` counts as a failure: some gateways
@@ -71,7 +98,7 @@ def probe(base_url, model, api_key, *, timeout=DEFAULT_PROBE_TIMEOUT,
     """
     payload = json.dumps({
         'model': model,
-        'messages': [{'role': 'user', 'content': 'ping'}],
+        'messages': [{'role': 'user', 'content': probe_payload(model, task=task)}],
         'max_tokens': 4,
         'stream': False,
     }).encode()
@@ -193,7 +220,7 @@ class HealthCache:
             return {}
 
     @staticmethod
-    def key(base_url, model, provider=None):
+    def key(base_url, model, provider=None, task=''):
         """Cache key for one candidate.
 
         Scoped by provider name when one is given. Several providers can share
@@ -203,14 +230,24 @@ class HealthCache:
         alive and a live one looks dead. The provider name is what
         distinguishes their credentials.
 
-        ``provider=None`` yields the legacy 2-part key, which
+        Scoped by task when one is given. A ``vision`` probe carries an image;
+        a ``compression`` probe does not. A text-only model is healthy for the
+        latter and useless for the former, so a cached verdict from one task
+        must never be read back by another — the same collision bug, one axis
+        further.
+
+        ``provider=None``/``task=''`` yields the legacy 2-part key, which
         :meth:`migrate` upgrades in place.
         """
         if provider:
+            if task:
+                return f'{provider}|{task}|{base_url}|{model}'
             return f'{provider}|{base_url}|{model}'
+        if task:
+            return f'{task}|{base_url}|{model}'
         return f'{base_url}|{model}'
 
-    def migrate(self, candidates):
+    def migrate(self, candidates, task=''):
         """Upgrade legacy ``base_url|model`` entries to provider-scoped keys.
 
         Returns the number of entries copied. Without this the scoping change
@@ -218,6 +255,11 @@ class HealthCache:
         re-enabling the flapping hysteresis exists to prevent. A legacy entry
         fans out to each provider sharing that base_url+model; their verdicts
         then diverge on the next probe.
+
+        ``task`` scopes the new keys exactly like :meth:`key` — a legacy
+        entry migrates into the key of the task that is running, so a
+        compression run and a vision run each get their own copy and their
+        verdicts never cross.
         """
         migrated = 0
         if not self.data:
@@ -225,7 +267,7 @@ class HealthCache:
         for cand in candidates:
             legacy = self.key(cand['base_url'], cand['model'])
             scoped = self.key(cand['base_url'], cand['model'],
-                              cand.get('provider'))
+                              cand.get('provider'), task)
             if scoped == legacy or scoped in self.data:
                 continue
             entry = self.data.get(legacy)
@@ -236,24 +278,24 @@ class HealthCache:
         for cand in candidates:
             legacy = self.key(cand['base_url'], cand['model'])
             scoped = self.key(cand['base_url'], cand['model'],
-                              cand.get('provider'))
+                              cand.get('provider'), task)
             if scoped != legacy and legacy in self.data and scoped in self.data:
                 self.data.pop(legacy, None)
         return migrated
 
-    def get(self, base_url, model, provider=None):
-        entry = self.data.get(self.key(base_url, model, provider))
+    def get(self, base_url, model, provider=None, task=''):
+        entry = self.data.get(self.key(base_url, model, provider, task))
         return entry if isinstance(entry, dict) else {}
 
-    def fresh(self, base_url, model, *, provider=None, now=None):
-        entry = self.get(base_url, model, provider)
+    def fresh(self, base_url, model, *, provider=None, task='', now=None):
+        entry = self.get(base_url, model, provider, task)
         if not entry:
             return False
         now = time.time() if now is None else now
         return (now - entry.get('ts', 0)) < self.ttl
 
-    def record(self, base_url, model, entry, provider=None):
-        self.data[self.key(base_url, model, provider)] = entry
+    def record(self, base_url, model, entry, provider=None, task=''):
+        self.data[self.key(base_url, model, provider, task)] = entry
 
     def save(self):
         directory = os.path.dirname(self.path) or '.'
@@ -275,7 +317,7 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
              demote_streak=DEFAULT_DEMOTE_STREAK,
              promote_streak=DEFAULT_PROMOTE_STREAK,
              latency_window=DEFAULT_LATENCY_WINDOW,
-             context_lookup=None, now=None):
+             context_lookup=None, now=None, task='compression'):
     """Probe (or reuse cached results for) every candidate.
 
     Returns ``(eligible, rejected)``. ``eligible`` entries carry ``ok_now``,
@@ -288,21 +330,21 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
     now = time.time() if now is None else now
     eligible, rejected = [], []
 
-    cache.migrate(candidates)
+    cache.migrate(candidates, task)
 
     for cand in candidates:
         base_url, model = cand['base_url'], cand['model']
         provider = cand.get('provider')
-        entry = cache.get(base_url, model, provider)
+        entry = cache.get(base_url, model, provider, task)
 
-        if cache.fresh(base_url, model, provider=provider, now=now):
+        if cache.fresh(base_url, model, provider=provider, task=task, now=now):
             ok = entry.get('ok', False)
             latency = entry.get('latency', 99.0)
             err = entry.get('err', '')
             context = entry.get('context', 0)
         else:
             ok, latency, err = probe(base_url, model, cand['api_key'],
-                                     timeout=timeout)
+                                     timeout=timeout, task=task)
             context = 0
             if ok and context_lookup:
                 context = context_lookup(cand) or 0
@@ -315,7 +357,7 @@ def evaluate(candidates, cache, *, timeout=DEFAULT_PROBE_TIMEOUT,
                 entry = record_latency(entry, latency, window=latency_window)
             entry.update(ok=ok, latency=round(latency, 2), err=err,
                          context=context, ts=now)
-            cache.record(base_url, model, entry, provider)
+            cache.record(base_url, model, entry, provider, task)
 
         state = entry.get('state', 'up' if ok else 'down')
         if state != 'up':

@@ -70,6 +70,39 @@ judgement about any vendor.
 
 Dry run is the default. Nothing writes your config until you pass `--apply`.
 
+## Vision routes
+
+`--task vision` heals `auxiliary.vision` the same way, with one critical
+difference: **the probe carries a real image**, not just text.
+
+A text-only model answers a `'ping'` probe with a happy 200 — that is why the
+plain probe would certify it for a vision route, and why a vision route built
+from it fails on every image the user sends. The vision probe is a 1x1 PNG in
+a multimodal payload:
+
+- a model that accepts images answers it like any other completion;
+- a text-only model refuses it with a `400` ("Model do not support image
+  input"), which is classified as a **permanent** verdict — demoted on the
+  first strike, never routed for vision;
+- health-cache verdicts are scoped **per task**, so a model that passed the
+  text probe for `compression` does not carry that verdict into the vision
+  route (or back).
+
+```console
+$ hermes-aux-autoheal --task vision --verbose
+  skip ProviderA/text-chat-8b: probe failed: HTTP 400 Model do not support image input
+  ok   ProviderA/multimodal-9b: tier=1 ctx=1,000,000 probe=3.1s
+DRY RUN would update vision: primary=ProviderA/multimodal-9b
+re-run with --apply to write it
+```
+
+Why an explicit route at all: Hermes' `auxiliary.vision` left unset routes
+images to the *main chat model*, so the vision backend changes whenever the
+user switches chat models, and a text-only chat model silently takes over
+image duty. Writing `auxiliary.vision.provider` + `model` pins vision to a
+verified-capable backend; the `fallback_chain` written alongside it is what
+saves a call when that backend is down.
+
 ## Relays and gateways
 
 Two ways people configure Hermes, and this tool has to handle both.
@@ -278,7 +311,7 @@ leaves the document byte-identical.
 
 | flag | default | purpose |
 |------|---------|---------|
-| `--task` | `compression` | which `auxiliary.<task>` to heal |
+| `--task` | `compression` | which `auxiliary.<task>` to heal (`vision` probes with an image so text-only models are never routed) |
 | `--apply` | off | actually write (default is a dry run) |
 | `--verbose` | off | print every candidate and verdict |
 | `--config` | `$HERMES_HOME/config.yaml` | config path |
@@ -317,6 +350,9 @@ Worth knowing before you rely on it:
 - **A probe is a sample, not a guarantee.** A model can pass at 12:00 and be
   gone at 12:03. This narrows the window; the `fallback_chain` is still what
   saves an in-flight call.
+- **Vision probing costs a real image per model per TTL window.** One 1x1 PNG
+  against a metered multimodal key is near-zero, but it is a genuine
+  multimodal request, not the 4-text-token probe.
 - **A small probe cannot see a per-model quota wall.** Measured on a live
   install: **441 `HTTP 429` responses in real traffic** on one model while the
   4-token probe kept returning `200 OK`. The probe is too small to trip a limit
@@ -343,7 +379,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-311 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+328 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.
