@@ -352,8 +352,11 @@ hand-built fixture.
 
 ## Credits
 
-The `fallback_chain` config shape belongs to Hermes Agent; this tool only keeps
-it honest. Hermes Agent is MIT-licensed and © 2025 Nous Research.
+`auxiliary.<task>` and the `fallback_chain` shape inside it are Hermes Agent's
+own config surface — Hermes reads that chain in `agent/auxiliary_client.py` and
+falls through it when an auxiliary call fails. This tool only keeps the entries
+honest; it invents no config of its own. Hermes Agent is MIT-licensed and
+© 2025 Nous Research.
 
 ## License
 
