@@ -5,6 +5,43 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`tests/doc_links.py`** — the documentation link check is now a test, not a
+  habit. Earlier releases verified anchors with a throwaway script and the
+  changelog admitted as much; a check that depends on someone remembering to run
+  it is not a check. It indexes the headings of every markdown file in the repo
+  (discovered by walk, so a doc added later is covered without editing the
+  checker) and verifies every relative link and every `#anchor` resolves.
+
+  Two things a line-based version gets wrong, both of them real:
+
+  - GitHub's slugs strip **dots**, so `#writing-config.yaml-safely` is dead while
+    `#writing-configyaml-safely` works. That exact link shipped broken.
+  - A `#` line inside a fenced code block is a shell comment, not a heading.
+    `README.md` contains `# on a timer, every 5 minutes` in a bash block;
+    indexing it invents an anchor GitHub will not honour, which makes a checker
+    report PASS for a link that is actually dead. Fences are tracked, and a
+    ` ``` ` does not close a `~~~` block.
+
+  Reference-style definitions (`[label]: target#anchor`) are checked too, since
+  they are easy to forget and just as capable of rotting. Repeated headings get
+  GitHub's `-1`/`-2` suffixes so a link to the second occurrence is not reported
+  dead. `python tests/doc_links.py` prints a standalone report.
+
+  The checker's own tests were verified by mutation: unfenced heading indexing,
+  dot-preserving slugs, and the anchor check disabled outright — each must make
+  the suite fail, and each does. A broken link was also planted in the real
+  `README.md` four different ways to confirm the suite goes red on the actual
+  docs rather than only on synthetic fixtures.
+
+### Changed
+
+- Test count in `README.md` and `STABILITY.md` re-derived from a run rather than
+  incremented by hand: **423**.
+
 ## [0.8.3] — 2026-09-06
 
 ### Added
