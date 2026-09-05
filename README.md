@@ -428,7 +428,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-397 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+423 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.
@@ -436,6 +436,14 @@ files — including a genuine three-process write race.
 16 of those cover [`examples/dashboard/`](examples/dashboard/) and skip unless
 FastAPI is installed (`pip install -e '.[dashboard]'`); a cron tool's test run
 should not require a web framework.
+
+26 check the documentation itself: every relative link and every `#anchor` in
+these markdown files has to resolve, because a dead anchor is invisible — the
+page loads and the link scrolls nowhere. Run it alone for a readable report:
+
+```bash
+python tests/doc_links.py
+```
 
 The behaviours that are easy to regress are named individually, with the reason
 each test exists, in

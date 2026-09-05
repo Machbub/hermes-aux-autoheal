@@ -279,7 +279,7 @@ letting a text-only model into the route in the first place.
 
 ## Behaviours the tests pin
 
-339 tests, run against both YAML backends — with and without `ruamel.yaml`, since
+423 tests, run against both YAML backends — with and without `ruamel.yaml`, since
 the fallback path is what most people hit first. No network: probes and the
 `/v1/models` listing are stubbed, but discovery, the health state machine, route
 building and config writing all run against real files, including a genuine
@@ -321,6 +321,18 @@ These are the ones that are easy to regress:
   cache key carries the task — so a model verified healthy on text cannot
   inherit that verdict for images, and a model demoted for refusing images
   cannot be saved by a later text-probe pass.
+- **Every documentation link resolves.** A dead `#anchor` is invisible: the page
+  loads, the link scrolls nowhere, and no test notices. `tests/doc_links.py`
+  indexes the headings of every markdown file in the repo and checks each
+  relative link and anchor against them, so this file and the README cannot drift
+  apart silently. Two subtleties the checker exists for: GitHub's slugs strip
+  dots, so `#writing-config.yaml-safely` is dead and
+  `#writing-configyaml-safely` is not — that link shipped broken once — and a `#`
+  line inside a fenced code block is a shell comment, not a heading, so a
+  line-based checker invents anchors and reports PASS on links GitHub cannot
+  resolve. Its own tests mutate the checker three ways (unfenced indexing,
+  dot-preserving slugs, anchor check disabled) and require each mutation to make
+  the suite fail; a linter that cannot fail is decoration.
 
 ## How a churn fix gets verified here
 
