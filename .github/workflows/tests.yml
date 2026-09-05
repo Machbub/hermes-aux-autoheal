@@ -27,6 +27,15 @@ jobs:
       - name: Test
         run: python -m pytest tests/ -q
 
+      # examples/dashboard is optional surface: its tests skip when FastAPI (or
+      # httpx, which starlette's TestClient needs) is absent, so without this
+      # step they would silently never run anywhere. Installed AFTER the main
+      # run, which therefore also proves the skip path works.
+      - name: Test the dashboard example
+        run: |
+          pip install -e '.[dashboard]'
+          python -m pytest tests/test_dashboard_example.py -q
+
       # The PyYAML fallback path is what most users hit before they read the
       # README, so it has to stay working — and it is easy to break by
       # accidentally depending on a ruamel-only API.
