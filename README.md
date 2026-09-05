@@ -348,13 +348,19 @@ config file you can still read, and a route that is correct on disk rather
 than corrected in flight.
 
 One asymmetry worth stating plainly, since it is the real reason to keep a
-component out of the request path rather than the RAM it would use — a small proxy
-costs tens of megabytes, which is rarely what decides anything. It is the blast
-radius: if this tool dies, `config.yaml` freezes at the last route it verified
-alive and Hermes keeps working. If a proxy dies, every request through it dies
-with it. For a personal install that asymmetry may outweigh the faster reaction;
-for anything carrying real traffic, per-request failover is worth a process you
-have to keep up.
+component out of the request path rather than the RAM it would use. Measured on a
+live install with `/usr/bin/time -v`: this tool's peak RSS is **57 MB** on the
+largest run (14 models probed, most of the wall time spent waiting on network
+timeouts) and **28 MB** on a smaller task — but it is a process that exits, not a
+daemon, so between ticks it holds nothing. Averaged over time that is roughly
+**5 MB**, an upper bound that assumes a full probe every tick; a health-cache TTL
+makes most ticks cheaper. A proxy holds its entire footprint **every second**.
+The asymmetry that matters more than either number is the blast radius: if this
+tool dies, `config.yaml` freezes at the last route it verified alive and Hermes
+keeps working. If a proxy dies, every request through it dies with it. For a
+personal install that asymmetry may outweigh the faster reaction; for anything
+carrying real traffic, per-request failover is worth a process you have to keep
+up.
 
 ## Writing config safely
 
@@ -450,6 +456,13 @@ Worth knowing before you rely on it:
   policy, no traffic splitting.
 - **Probing costs tokens.** Four output tokens per model per TTL window (text
   tasks). Small, but not zero on a metered key.
+- **The probe footprint, measured.** Peak RSS 57 MB on the largest configuration
+  tested (14 models), 28 MB on a smaller one (`/usr/bin/time -v`, live install) —
+  but the process exits after each run, so between ticks it holds nothing. The
+  memory cost of a cron-scheduled run is its peak times its duty cycle, roughly
+  5 MB averaged over a 5-minute tick interval, an upper bound assuming a full
+  probe every tick; the `--ttl` health cache makes most ticks cheaper. A proxy's
+  footprint, by contrast, is resident every second.
 - **Tiering is a heuristic.** Tiers come from substring matching on model
   names; an unconventionally named model lands in the middle. Overridable, but
   there is no semantic understanding.
