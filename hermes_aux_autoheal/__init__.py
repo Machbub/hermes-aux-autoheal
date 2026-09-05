@@ -13,6 +13,6 @@ to run on a timer next to other processes writing the same config file.
 Not affiliated with Nous Research.
 """
 
-__version__ = '0.8.3'
+__version__ = '0.8.4'
 __all__ = ['config_io', 'context', 'discovery', 'exclude', 'health', 'report',
            'router']

@@ -50,7 +50,7 @@ except ImportError:                                     # pragma: no cover
 
 # Import from the installed package; running from a clone works too.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from hermes_aux_autoheal import report                  # noqa: E402
+from hermes_aux_autoheal import exclude, report          # noqa: E402
 
 app = FastAPI(title='autoheal dashboard (reference)')
 
@@ -112,9 +112,20 @@ def api_health(_=Depends(require_auth)):
 
     Cost of opening this page: one file read per task. That property is the
     reason the dashboard cannot burn quota no matter how often it is refreshed.
+
+    The exclude list is passed in, and that is not optional politeness: a model
+    on it is never probed again, so its cache row freezes at whatever the last
+    verdict was. Without this argument the page shows a red row for a decision
+    the operator already made, and — worse — reports that frozen timestamp as
+    the age of the last probe.
     """
-    out = report.summarize(CFG['caches'])
+    out = report.summarize(CFG['caches'],
+                           exclude=exclude.load(CFG['exclude_file']))
     out['status'] = 'ok'
+    # Freshness comes from last_probe_ts (newest row overall), never from
+    # last_problem_ts: "when did we last check" and "when did the worst thing
+    # last fail" are different questions, and conflating them made a live
+    # dashboard claim the prober was 47 minutes stale while cron ran on time.
     out['cache_age_s'] = (int(time.time() - out['last_probe_ts'])
                           if out['last_probe_ts'] else None)
     return out

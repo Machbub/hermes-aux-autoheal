@@ -152,6 +152,45 @@ def test_the_read_path_never_touches_the_provider_key(env):
     assert 'secret' not in body
 
 
+def test_freshness_ignores_a_frozen_excluded_row(env):
+    """The live bug this endpoint had: "last probe 47 minutes ago" on a healthy box.
+
+    An excluded model is never probed again, so its cache row freezes. Taking
+    `max(ts)` over problem rows then reports that frozen stamp as the age of the
+    whole system, while the newest healthy row — written 90 seconds ago — is
+    ignored. Here the frozen row is deliberately the OLDEST and a healthy row the
+    newest, so a regression flips the number back.
+    """
+    _login(env['client'])
+    # dead-chat is the oldest row (ts 1788600000); good-chat the newest (…002).
+    env['exclude'].write_text(json.dumps({
+        'version': 1,
+        'entries': [{'provider': 'VendorA', 'model': 'dead-chat', 'task': '*'}],
+    }), encoding='utf-8')
+    d = env['client'].get('/api/health').json()
+
+    assert 'dead-chat' not in [p['model'] for p in d['problems']], \
+        'an excluded model is still reported as a problem'
+    assert d['last_probe_ts'] == 1788600002, 'freshness came from the frozen row'
+    # The old meaning is still exposed, just not as freshness.
+    assert d['last_problem_ts'] == 1788600001
+
+
+def test_freshness_is_reported_when_every_model_is_healthy(env, tmp_path, dash):
+    """All-healthy must not report `None` age — a UI renders that as "never"."""
+    only_good = tmp_path / 'good.json'
+    only_good.write_text(json.dumps({
+        'VendorC|https://c.example/v1|good-chat': {
+            'ok': True, 'state': 'up', 'err': '', 'ts': 1788600123},
+    }), encoding='utf-8')
+    dash.CFG['caches'] = [('compression', str(only_good))]
+    _login(env['client'])
+    d = env['client'].get('/api/health').json()
+    assert d['problems'] == []
+    assert d['last_probe_ts'] == 1788600123
+    assert d['cache_age_s'] is not None
+
+
 # --------------------------------------------------------------- write path
 
 def test_a_self_healing_category_is_refused(env):
