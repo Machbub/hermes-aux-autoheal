@@ -39,6 +39,10 @@ a conversation that stalls exactly when it grew long enough to need compacting.
 Hermes' own `fallback_chain` is reactive: it moves on *after* a call fails.
 Nobody checks beforehand whether the names in the list are still real.
 
+The chain also ships no default and appears in no generated config, so every
+entry in it was typed by hand at some point — against whatever the provider
+offered that week.
+
 ## What this does
 
 Every run:
