@@ -18,7 +18,7 @@ import os
 import sys
 import time
 
-from . import config_io, context, discovery, health, router
+from . import config_io, context, discovery, exclude, health, router
 
 
 def default_home():
@@ -43,6 +43,14 @@ def build_parser():
                    help='path to .env for API keys (default: $HERMES_HOME/.env)')
     p.add_argument('--sqlite-db',
                    help='optional dashboard SQLite db to also read providers from')
+    p.add_argument('--exclude-file',
+                   help='JSON file of (provider, model) pairs to NEVER probe — '
+                        'models ruled out permanently, e.g. an account with no '
+                        'credit. Format: {"entries": [{"provider": "...", '
+                        '"model": "..."}]}; a bare list is accepted too.')
+    p.add_argument('--exclude', action='append', metavar='PROVIDER/MODEL',
+                   help='one provider/model pair to never probe '
+                        '(repeatable; alternative to --exclude-file)')
     p.add_argument('--no-discover-models', action='store_true',
                    help='do not ask providers for their /v1/models listing; '
                         'use only models pinned in config.yaml')
@@ -136,6 +144,16 @@ def main(argv=None):
         discover_models=not args.no_discover_models,
         max_discovered=args.max_discovered)
     for cand, why in skipped:
+        vprint(f'  skip {cand["provider"]}/{cand["model"]}: {why}')
+
+    # Never-probe list: models ruled out permanently (no credit, gone from the
+    # gateway, text-only routed to a vision job). Filtered before any probe so
+    # they cost nothing and never occupy a dashboard health row again.
+    excluded_entries = (exclude.load(args.exclude_file)
+                        + exclude.parse_pairs(args.exclude))
+    candidates, excluded = exclude.split(candidates, excluded_entries,
+                                         task=args.task)
+    for cand, why in excluded:
         vprint(f'  skip {cand["provider"]}/{cand["model"]}: {why}')
 
     if not candidates:

@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — 2026-09-05
+
+### Added
+
+- **`--exclude-file` / `--exclude`** — never-probe list, filtered before any
+  API call. Models with a dead account or gone from the gateway fail every
+  probe forever; probing them each TTL window is pure waste. The list is a
+  simple JSON file (`{"entries": [{"provider": "...", "model": "..."}]}`),
+  task-scoped (`"task": "vision"` blocks only vision), case-insensitive.
+  The dashboard's "Model Bermasalah" delete button writes exactly this file.
+
 ## [0.8.1] — 2026-09-05
 
 ### Fixed

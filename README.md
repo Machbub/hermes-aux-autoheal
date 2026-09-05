@@ -155,6 +155,10 @@ Practical notes:
 - A provider whose key is missing is never contacted.
 - `--no-discover-models` switches listing off entirely; only pinned models are
   probed.
+- `--exclude-file` / `--exclude` carry a never-probe list: models ruled out
+  permanently (dead account, gone from the gateway, text-only in a vision job).
+  They cost nothing — filtered before any API call — and never occupy a health
+  row again. Task-scoped entries (`"task": "vision"`) block only that task.
 
 The honest limit: when every model reaches you through one relay, a chain of
 four is four models behind one endpoint. If the relay breaks, the chain breaks
@@ -317,6 +321,8 @@ leaves the document byte-identical.
 | `--config` | `$HERMES_HOME/config.yaml` | config path |
 | `--env-file` | `$HERMES_HOME/.env` | where API keys are read from |
 | `--sqlite-db` | none | also read providers from a dashboard database |
+| `--exclude-file` | — | JSON file of `(provider, model)` pairs to never probe |
+| `--exclude` | — | one `PROVIDER/MODEL` pair to never probe (repeatable) |
 | `--no-discover-models` | off | never ask a provider for its `/v1/models` listing |
 | `--max-discovered` | 25 | cap on models taken from one provider listing |
 | `--chain-depth` | 3 | fallback entries to keep |
@@ -383,7 +389,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-329 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+339 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.

@@ -279,7 +279,7 @@ letting a text-only model into the route in the first place.
 
 ## Behaviours the tests pin
 
-329 tests, run against both YAML backends — with and without `ruamel.yaml`, since
+339 tests, run against both YAML backends — with and without `ruamel.yaml`, since
 the fallback path is what most people hit first. No network: probes and the
 `/v1/models` listing are stubbed, but discovery, the health state machine, route
 building and config writing all run against real files, including a genuine
