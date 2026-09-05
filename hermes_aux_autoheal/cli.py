@@ -43,6 +43,11 @@ def build_parser():
                    help='path to .env for API keys (default: $HERMES_HOME/.env)')
     p.add_argument('--sqlite-db',
                    help='optional dashboard SQLite db to also read providers from')
+    p.add_argument('--quiet-routine', action='store_true',
+                   help='suppress stdout for successful routine work (route '
+                        'updates, "already correct"); only failures and the '
+                        '"no healthy candidate" alarm still print. Use in cron '
+                        'so a healthy autoheal is silent.')
     p.add_argument('--exclude-file',
                    help='JSON file of (provider, model) pairs to NEVER probe — '
                         'models ruled out permanently, e.g. an account with no '
@@ -280,9 +285,18 @@ def main(argv=None):
         config_io.prune_backups('auxautoheal')
 
     stamp = time.strftime('%Y-%m-%dT%H:%M:%S')
-    emit(f'[{stamp}] route updated {plan}')
-    if router.should_notify(reason, desired):
-        emit('  ^ primary changed or chain nearly empty — worth a look')
+    exhausted = len(desired['fallback_chain']) <= 1
+    if args.quiet_routine:
+        # Only a route that has run out of spares is worth interrupting someone
+        # for; a primary swap is the autoheal doing its job. Matches the live
+        # compression script's notify rule (notify=len(chain) <= 1).
+        if exhausted:
+            emit(f'[{stamp}] route updated {plan}')
+            emit('  ^ chain down to its last entry — add a key or provider')
+    else:
+        emit(f'[{stamp}] route updated {plan}')
+        if router.should_notify(reason, desired):
+            emit('  ^ primary changed or chain nearly empty — worth a look')
     return 0
 
 

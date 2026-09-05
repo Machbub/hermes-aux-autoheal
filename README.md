@@ -215,6 +215,44 @@ something changed. Exit codes, for monitoring:
 | 1 | nothing healthy to route to — config left untouched |
 | 2 | write refused (lock contention, conflicting writer, failed validation) |
 
+### Notifications
+
+If the cron job's output goes somewhere a human reads — a chat, an email, a
+pager — add `--quiet-routine`:
+
+```bash
+*/5 * * * * hermes-aux-autoheal --apply --quiet-routine --prune-backups
+```
+
+A healthy tick then prints nothing at all, and only two things still speak: a
+chain down to its last entry, and an outright failure. Without it, every routine
+primary swap arrives as a message; after a week of those, the reader has learned
+to ignore the job, which means the one message that mattered gets ignored too.
+Dry runs always print — someone is waiting for the answer.
+
+## Building a dashboard on this
+
+The health cache is a plain JSON file, and `hermes_aux_autoheal.report` turns it
+into rows worth showing someone:
+
+```python
+from hermes_aux_autoheal import report
+
+out = report.summarize([('compression', '~/.hermes/.aux_autoheal_health.json')])
+for row in out['problems']:
+    print(row['provider'], row['model'], row['category'], row['hint'])
+```
+
+Each row carries an actionable `category` (`no_balance` → top up, `rate_limit` →
+wait, `model_gone` → untick the model, `auth` → replace the key) instead of a
+bare "down". Opening such a page costs zero API calls: autoheal probes on its
+timer and the page reads what it left behind.
+
+[DASHBOARD.md](DASHBOARD.md) is the integration contract — which side owns which
+file, and the five mistakes that are easy to make.
+[examples/dashboard/](examples/dashboard/) is a working one-file reference
+implementation.
+
 ## How models are ranked
 
 For a background summarizer, cheap and fast beats smart. A frontier reasoning
@@ -321,6 +359,7 @@ leaves the document byte-identical.
 | `--config` | `$HERMES_HOME/config.yaml` | config path |
 | `--env-file` | `$HERMES_HOME/.env` | where API keys are read from |
 | `--sqlite-db` | none | also read providers from a dashboard database |
+| `--quiet-routine` | off | for cron: say nothing on a healthy tick (see [Notifications](#notifications)) |
 | `--exclude-file` | — | JSON file of `(provider, model)` pairs to never probe |
 | `--exclude` | — | one `PROVIDER/MODEL` pair to never probe (repeatable) |
 | `--no-discover-models` | off | never ask a provider for its `/v1/models` listing |
@@ -389,10 +428,14 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-339 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+397 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.
+
+16 of those cover [`examples/dashboard/`](examples/dashboard/) and skip unless
+FastAPI is installed (`pip install -e '.[dashboard]'`); a cron tool's test run
+should not require a web framework.
 
 The behaviours that are easy to regress are named individually, with the reason
 each test exists, in

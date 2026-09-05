@@ -5,6 +5,50 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] — 2026-09-06
+
+### Added
+
+- **`--quiet-routine`** — for cron. A healthy tick now prints nothing, so the
+  watchdog contract ("empty stdout = nothing to report") holds. Only a chain
+  down to its last entry, or an outright failure, still speaks. Every routine
+  route update reaching the chat trains the reader to ignore the job, which
+  means the one message that matters gets ignored too. Dry runs still print —
+  someone is waiting for the answer.
+
+- **`hermes_aux_autoheal.report`** — turn a health cache into rows a dashboard
+  can render. `summarize()` folds one or more caches into `{'problems': [...],
+  'ok_count': N}`, worst first; `parse_key()` handles all four cache-key shapes;
+  `classify()` maps a probe error to an actionable category (`no_balance`,
+  `rate_limit`, `model_gone`, `auth`, `no_vision`, ...) rather than a bare
+  "down". `DELETABLE` names the categories worth offering a "stop probing"
+  button for — the rest heal themselves or need a different fix, and hiding
+  those rows removes a working model from the pool.
+
+- **`DASHBOARD.md`** — the integration contract. Which of the four files each
+  side owns (autoheal writes `config.yaml` + the health cache; a dashboard
+  writes the exclude list + the provider DB), the direction data flows, and the
+  five mistakes that are easy to make. Two of the five were real bugs here:
+  reading `state` instead of `ok` (a recovered model reads `ok=true,
+  state="down"` for one tick and gets reported as broken), and matching status
+  codes as bare numbers (a request id containing `404` turned a quota error into
+  a dead model, complete with a delete button).
+
+- **`examples/dashboard/app.py`** — a working reference dashboard, one file of
+  FastAPI, no database of its own. Shows the read path (cache → rows), the write
+  path (delete → exclude + untick + purge, all three required), and the auth
+  boundary. Binds `127.0.0.1` and requires a session cookie: the exclude
+  endpoint changes what gets routed, so unauthenticated it is a remote "disable
+  this operator's models" button. Its tests skip unless FastAPI is installed —
+  a cron tool's CI should not have to install a web framework.
+
+### Fixed
+
+- **`__version__` had said `0.7.3` since 0.7.3** while `pyproject.toml` moved on
+  to 0.8.2. `pip show` and a bug report quoted different numbers. Both now read
+  0.8.3, and `test_declared_version_matches_the_package_version` asserts they
+  agree — an invariant, so it needs no editing on the next bump.
+
 ## [0.8.2] — 2026-09-05
 
 ### Added

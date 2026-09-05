@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-aux-autoheal"
-version = "0.8.2"
+version = "0.8.3"
 description = "Keep Hermes Agent's auxiliary task routes pointed at models that answer"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,6 +23,11 @@ dependencies = ["PyYAML>=5.4"]
 [project.optional-dependencies]
 # Without ruamel the PyYAML fallback works but deletes comments on write.
 comments = ["ruamel.yaml>=0.17"]
+# Only examples/dashboard needs these; the CLI itself never imports them.
+# httpx is not needed to RUN the example — starlette's TestClient needs it to
+# test it, and shipping it here keeps `pip install -e '.[dashboard]'` enough to
+# run tests/test_dashboard_example.py.
+dashboard = ["fastapi>=0.100", "uvicorn>=0.23", "httpx>=0.24"]
 dev = ["pytest>=7", "ruamel.yaml>=0.17"]
 
 [project.scripts]
