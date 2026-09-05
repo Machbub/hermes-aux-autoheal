@@ -351,9 +351,12 @@ Worth knowing before you rely on it:
 - **A probe is a sample, not a guarantee.** A model can pass at 12:00 and be
   gone at 12:03. This narrows the window; the `fallback_chain` is still what
   saves an in-flight call.
-- **Vision probing costs a real image per model per TTL window.** One 16×16
-  PNG against a metered multimodal key is near-zero, but it is a genuine
-  multimodal request, not the 4-text-token probe.
+- **A vision probe is billed as a multimodal request, not a text one.** The
+  image itself is tiny — a 16×16 PNG, well under a kilobyte — so the cost per
+  model per probe is close to nothing. But providers can price image input on a
+  different meter than the 4-token text probe, so check your rates before
+  pointing `--task vision` at a metered key. Each model is probed at most once
+  per `--ttl` (default 600s), no matter how often you run the tool.
 - **A small probe cannot see a per-model quota wall.** Measured on a live
   install: **441 `HTTP 429` responses in real traffic** on one model while the
   4-token probe kept returning `200 OK`. The probe is too small to trip a limit
@@ -361,8 +364,8 @@ Worth knowing before you rely on it:
   log evidence in [STABILITY.md](STABILITY.md#the-quota-wall-a-probe-cannot-see).
 - **It reacts per tick, never per request.** No mid-request failover, no retry
   policy, no traffic splitting.
-- **Probing costs tokens.** Four output tokens per model per TTL window. Small,
-  but not zero on a metered key.
+- **Probing costs tokens.** Four output tokens per model per TTL window (text
+  tasks). Small, but not zero on a metered key.
 - **Tiering is a heuristic.** Tiers come from substring matching on model
   names; an unconventionally named model lands in the middle. Overridable, but
   there is no semantic understanding.
@@ -380,7 +383,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-328 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+329 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.
