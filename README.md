@@ -266,9 +266,10 @@ The health cache is a plain JSON file, and `hermes_aux_autoheal.report` turns it
 into rows worth showing someone:
 
 ```python
-from hermes_aux_autoheal import report
+from hermes_aux_autoheal import exclude, report
 
-out = report.summarize([('compression', '~/.hermes/.aux_autoheal_health.json')])
+out = report.summarize([('compression', '~/.hermes/.aux_autoheal_health.json')],
+                       exclude=exclude.load('~/.hermes/.aux_probe_blocklist.json'))
 for row in out['problems']:
     print(row['provider'], row['model'], row['category'], row['hint'])
 ```
@@ -278,8 +279,13 @@ wait, `model_gone` → untick the model, `auth` → replace the key) instead of 
 bare "down". Opening such a page costs zero API calls: autoheal probes on its
 timer and the page reads what it left behind.
 
+Render `out['last_probe_ts']` as "last checked" — it is the newest probe across
+every row still being probed. Do not compute freshness from the problem rows; that
+bug shipped once and made a healthy install report a 47-minute-old probe while
+cron was running on time.
+
 [DASHBOARD.md](DASHBOARD.md) is the integration contract — which side owns which
-file, and the five mistakes that are easy to make.
+file, and the seven mistakes that are easy to make.
 [examples/dashboard/](examples/dashboard/) is a working one-file reference
 implementation.
 
@@ -480,7 +486,7 @@ Worth knowing before you rely on it:
 python -m pytest tests/ -q
 ```
 
-423 tests, run against both YAML backends (with and without `ruamel.yaml`). No
+435 tests, run against both YAML backends (with and without `ruamel.yaml`). No
 network: probes and the `/v1/models` listing are stubbed, but discovery, the
 health state machine, route building, and config writing all run against real
 files — including a genuine three-process write race.

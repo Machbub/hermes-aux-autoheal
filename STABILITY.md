@@ -299,7 +299,7 @@ letting a text-only model into the route in the first place.
 
 ## Behaviours the tests pin
 
-423 tests, run against both YAML backends — with and without `ruamel.yaml`, since
+435 tests, run against both YAML backends — with and without `ruamel.yaml`, since
 the fallback path is what most people hit first. No network: probes and the
 `/v1/models` listing are stubbed, but discovery, the health state machine, route
 building and config writing all run against real files, including a genuine
@@ -353,6 +353,18 @@ These are the ones that are easy to regress:
   resolve. Its own tests mutate the checker three ways (unfenced indexing,
   dot-preserving slugs, anchor check disabled) and require each mutation to make
   the suite fail; a linter that cannot fail is decoration.
+- **"Last checked" comes from every row still being probed, not from the failing
+  ones.** This shipped wrong in 0.8.3 and was caught on a live install: the page
+  read `probe terakhir 47 menit lalu` while cron had run 90 seconds earlier. One
+  frozen row — a model excluded from probing, whose timestamp never moves again —
+  set the reported age of the whole system, and an install with nothing wrong
+  reported `0`, which renders as "never". Two questions had been collapsed into
+  one field: *is the prober alive* and *when did the worst thing last fail*. They
+  are now `last_probe_ts` and `last_problem_ts`, and excluded rows leave both the
+  problem list and the healthy count, because a model nobody probes is evidence of
+  neither. Three mutations are required to fail: freshness from problem rows,
+  exclusions ignored, and exclusions honoured for the problem list but not for
+  freshness — that last one is the bug the first version of the fix introduced.
 
 ## How a churn fix gets verified here
 

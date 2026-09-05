@@ -74,14 +74,19 @@ Do not parse it by hand. `hermes_aux_autoheal.report` ships the parser and the
 error classifier:
 
 ```python
-from hermes_aux_autoheal import report
+from hermes_aux_autoheal import exclude, report
 
 out = report.summarize([
     ('compression', '~/.hermes/.aux_autoheal_health.json'),
     ('vision',      '~/.hermes/.aux_vision_health.json'),
-])
-# {'problems': [...], 'ok_count': 24, 'total': 27, 'last_probe_ts': 1788623429}
+], exclude=exclude.load('~/.hermes/.aux_probe_blocklist.json'))
+# {'problems': [...], 'ok_count': 24, 'total': 27,
+#  'last_probe_ts': 1788623429, 'last_problem_ts': 1788619001}
 ```
+
+Pass `exclude=` the same file the CLI runs with. Omitting it is not a cosmetic
+shortcut — see mistakes 6 and 7. Render `last_probe_ts` as "last checked";
+`last_problem_ts` answers "when did this break", which is a different question.
 
 Each problem row carries a `category` — the field a UI should branch on:
 
@@ -192,7 +197,7 @@ Also cap what the button ticks. The probe budget is one API call per model per
 TTL window; a relay returning 60 ids turns a 5-minute cron into 60 calls every
 10 minutes.
 
-## Five ways to get this wrong
+## Seven ways to get this wrong
 
 **1. Reading `state` instead of `ok`.** These answer different questions.
 `ok` is "did the last probe succeed?". `state` is the hysteresis verdict and only
@@ -232,6 +237,46 @@ listing, so an unticked model comes straight back on the next tick. The delete
 action needs all three: exclude-list entry (stops the probe), untick (stops the
 discovery), purge the cache row (clears the UI immediately instead of waiting for
 the TTL). The reference implementation does all three in one endpoint.
+
+**6. Taking "last checked" from the problem rows.** This one shipped in 0.8.3 and
+was found on a live install, which is why it is described in detail rather than as
+a warning.
+
+The page showed **"probe terakhir 47 menit lalu"** while cron had run 90 seconds
+earlier. `summarize()` computed freshness as `max(ts)` over the rows it was
+returning — the problem rows — so:
+
+- one frozen row (see 7) set the age of the entire system, and every fresh
+  healthy row was ignored;
+- an install with nothing wrong reported `0`, which a UI renders as "never
+  probed" — the fault indicator was brightest exactly when everything was fine.
+
+"Is the prober still running?" and "when did the worst thing last fail?" are
+different questions. `last_probe_ts` is the first and comes from every row still
+being probed, healthy included. `last_problem_ts` is the second, kept because it
+is genuinely useful — just never as a freshness indicator.
+
+**7. Reporting excluded models as problems.** Once a model is on the exclude list
+it is never probed again, so its cache row freezes at the last verdict before the
+block and nothing prunes it. Two consequences:
+
+- a permanent red row for a decision the operator already made, with a delete
+  button that does nothing new;
+- its frozen timestamp is what corrupted the freshness figure in 6.
+
+Pass the exclude list to the report and those rows drop out of both counts:
+
+```python
+from hermes_aux_autoheal import exclude, report
+
+data = report.summarize(CACHES, exclude=exclude.load(EXCLUDE_FILE))
+```
+
+An excluded row is not evidence of health either, so it leaves `ok_count` too —
+`ok_count + len(problems)` counts what is actually being probed. The purge step in
+5 removes the row anyway, but a dashboard cannot assume every exclusion went
+through its own endpoint: entries added by hand or by an earlier version are still
+in the file.
 
 ## Security, if the dashboard is on a network
 

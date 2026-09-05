@@ -20,6 +20,20 @@ Three jobs, deliberately small:
 * :func:`summarize` — fold one or more caches into ``{'problems': [...],
   'ok_count': N}``, worst first.
 
+Two things a first attempt at this gets wrong, both of which shipped in 0.8.3
+and are fixed here:
+
+* **"When did the last probe run?" is not answered by the problem rows.** Taking
+  ``max(ts)`` over problems reports the freshness of the WORST row, so a healthy
+  install with one frozen row claims the prober died an hour ago — and an install
+  with nothing wrong at all reports ``0``. It has to come from every row the
+  cache still probes. See :func:`newest_probe`.
+* **An excluded model is not a problem.** Once ``--exclude-file`` rules a model
+  out it is never probed again, so its cache row freezes at the last verdict
+  before the block. Nothing prunes it. Reporting it keeps a red row for a
+  decision the operator already made, and its stale timestamp poisons the
+  freshness figure above. Pass ``exclude=`` and those rows drop out.
+
 The categories, not the labels, are the API. Labels here are English defaults
 for display; a localised UI should map from ``category`` and ignore them.
 
@@ -29,6 +43,8 @@ See ``DASHBOARD.md`` for how these pieces fit together with ``--sqlite-db`` and
 
 import json
 import re
+
+from . import exclude as exclude_mod
 
 #: Task names recognised when a 3-part key is ambiguous. ``health.HealthCache.key``
 #: emits ``provider|base_url|model`` when a provider is known and
@@ -175,7 +191,46 @@ def load_cache(path):
     return data if isinstance(data, dict) else {}
 
 
-def problems(cache, task='', tasks=DEFAULT_TASKS):
+def _rows(cache, task='', tasks=DEFAULT_TASKS, exclude=()):
+    """Yield ``(ident, entry)`` for every cache row that is still being probed.
+
+    One place decides what "a row that counts" means, because the two callers
+    below must agree: a row that is not reported as a problem must not be
+    evidence of freshness either. Splitting that decision is how the second
+    version of this fix reintroduced the first version's bug.
+    """
+    for key, entry in (cache or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        ident = parse_key(key, tasks=tasks)
+        if exclude and exclude_mod.is_excluded(
+                ident['provider'], ident['model'], exclude,
+                task=ident['task'] or task or '*'):
+            continue
+        yield ident, entry
+
+
+def newest_probe(cache, task='', tasks=DEFAULT_TASKS, exclude=()):
+    """Timestamp of the most recent probe in one loaded cache, healthy or not.
+
+    This is the honest answer to "is the prober still running?", and it has to be
+    taken over every row that is still probed. Two ways to get it wrong, both
+    observed:
+
+    * Reading it off the problem rows — what 0.8.3 did — reports the age of the
+      WORST row. An install whose models are all fine except one frozen entry
+      claims the prober has been dead for an hour; an install with nothing wrong
+      at all reports 0, i.e. "never".
+    * Counting excluded rows. Their timestamp froze when the operator blocked
+      them and never moves again, so a blocked model is not evidence that
+      anything ran. Pass the same ``exclude`` list the CLI probes with.
+    """
+    stamps = [entry.get('ts', 0) or 0
+              for _ident, entry in _rows(cache, task, tasks, exclude)]
+    return max(stamps, default=0)
+
+
+def problems(cache, task='', tasks=DEFAULT_TASKS, exclude=()):
     """Unhealthy rows from one loaded cache, plus the healthy count.
 
     Returns ``(rows, ok_count)``.
@@ -187,15 +242,19 @@ def problems(cache, task='', tasks=DEFAULT_TASKS):
     reports a working model as broken, which is how a dashboard loses trust:
     the user tests the model by hand, sees it answer, and stops believing the
     page.
+
+    ``exclude`` is a list of entries from :mod:`hermes_aux_autoheal.exclude`
+    (``exclude.load(path)``). Rows matching it are dropped from BOTH counts: an
+    excluded model is not probed any more, so its row is a frozen record of a
+    decision already taken, not a problem to act on. Skipping it is not
+    cosmetic — its stale timestamp would otherwise be reported as the age of the
+    last probe.
     """
     rows, ok_count = [], 0
-    for key, entry in (cache or {}).items():
-        if not isinstance(entry, dict):
-            continue
+    for ident, entry in _rows(cache, task, tasks, exclude):
         if entry.get('ok') is True:
             ok_count += 1
             continue
-        ident = parse_key(key, tasks=tasks)
         raw = str(entry.get('err') or '')
         category, label, hint = classify(raw, entry.get('ok'))
         rows.append({
@@ -218,22 +277,36 @@ def problems(cache, task='', tasks=DEFAULT_TASKS):
     return rows, ok_count
 
 
-def summarize(caches, tasks=DEFAULT_TASKS):
+def summarize(caches, tasks=DEFAULT_TASKS, exclude=()):
     """Fold several caches into one report, worst first.
 
     ``caches`` is an iterable of ``(task_label, path)``. The task label is only
     a fallback for keys that do not carry one, so a 3-part compression key and a
     4-part vision key can share one table and still say which run found them.
+
+    ``exclude`` is applied to every cache — pass ``exclude.load(path)`` with the
+    same file the CLI runs with, or the report will disagree with what is
+    actually being probed.
+
+    ``last_probe_ts`` is the newest probe across the rows still being probed —
+    healthy included, excluded dropped — and is the field to render as "last
+    checked". ``last_problem_ts`` is the old (0.8.3) behaviour, kept because
+    "when did this break" is a real question, just not the one a freshness
+    indicator asks.
     """
-    rows, ok_count = [], 0
+    rows, ok_count, newest = [], 0, 0
     for task, path in caches:
-        cache_rows, ok = problems(load_cache(path), task=task, tasks=tasks)
+        cache = load_cache(path)
+        cache_rows, ok = problems(cache, task=task, tasks=tasks, exclude=exclude)
         rows.extend(cache_rows)
         ok_count += ok
+        newest = max(newest, newest_probe(cache, task=task, tasks=tasks,
+                                          exclude=exclude))
     rows.sort(key=lambda r: (SEVERITY.get(r['category'], 9), -r['fail_streak']))
     return {
         'problems': rows,
         'ok_count': ok_count,
         'total': ok_count + len(rows),
-        'last_probe_ts': max((r['last_probe_ts'] for r in rows), default=0),
+        'last_probe_ts': newest,
+        'last_problem_ts': max((r['last_probe_ts'] for r in rows), default=0),
     }

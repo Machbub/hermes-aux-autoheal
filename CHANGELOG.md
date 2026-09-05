@@ -5,10 +5,49 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.4] — 2026-09-06
+
+### Fixed
+
+- **`report.summarize()` reported the wrong "last checked" time.** Freshness was
+  computed as `max(ts)` over the PROBLEM rows, so every healthy row — normally the
+  freshest — was ignored. Found on a live install whose dashboard read
+  `probe terakhir 47 menit lalu` while cron had run 90 seconds earlier. Two
+  failure shapes, both real:
+  - one frozen row set the reported age of the whole system;
+  - an install with nothing wrong reported `0`, which a UI renders as "never
+    probed" — the indicator was worst exactly when everything was fine.
+
+  `last_probe_ts` now comes from every row still being probed, healthy included.
+  The old value is still available as `last_problem_ts`, because "when did this
+  break" is a real question — just not the one a freshness indicator asks.
+  **Behaviour change for existing readers of `last_probe_ts`**: the field now
+  means what its name says. A reader that wanted the old meaning must switch to
+  `last_problem_ts`.
+
+- **An excluded model was still reported as a problem.** Once `--exclude-file`
+  rules a model out it is never probed again, so its cache row freezes at the last
+  verdict before the block and nothing prunes it. The report showed a red row for
+  a decision the operator had already made, and that frozen timestamp is what
+  corrupted the freshness figure above. `report.problems()`, `report.newest_probe()`
+  and `report.summarize()` now take `exclude=` (default `()`, so an omitting caller
+  is unaffected) and drop matching rows from the problem list, the healthy count,
+  and the freshness calculation.
+
+### Added
+
+- `report.newest_probe(cache, ..., exclude=())` — freshness for one loaded cache,
+  exposed separately because a dashboard rendering a single task needs it without
+  the fold.
+- 12 tests for the two fixes, mutation-verified: reverting either half of the
+  change, or honouring exclusions for the problem list but not for freshness (the
+  bug the first version of this fix introduced), each turns the suite red.
 
 ### Changed
 
+- `examples/dashboard/app.py` passes the exclude list to `summarize()` and renders
+  `last_probe_ts`; `DASHBOARD.md` documents both traps as mistakes 6 and 7 (the
+  section was "Five ways to get this wrong").
 - **README: audience framing moved from experience level to config shape.** A new
   "Is this for your install?" section answers the question by what
   `custom_providers` looks like — several separate providers with hand-named
