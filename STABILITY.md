@@ -270,7 +270,7 @@ in one symptom:
    so even a configured `fallback_chain` was never consulted.
 
 The fix has two halves. The tool half is this release: the vision probe carries
-a real image (1x1 PNG), the `400` capability rejection is a permanent verdict,
+a real image (16×16 PNG), the `400` capability rejection is a permanent verdict,
 and the health cache is scoped per task so a text-probe verdict cannot leak
 into the vision route. The Hermes half is out of this repo's hands: routing a
 text-only chat model to vision, and not classifying the resulting 400, are

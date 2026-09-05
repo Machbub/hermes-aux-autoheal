@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — 2026-09-05
+
+### Fixed
+
+- **Probe image was too small for some providers.** The 1x1 PNG is rejected by
+  providers that require images over 10px (`height:1 or width:1 must be larger
+  than 10`), which mis-certified a healthy vision model as failing. The probe
+  image is now 16×16, small enough to be noise and large enough for every
+  provider tested.
+
+### Added
+
+- **`--no-chat-chain`.** Skips the top-level `fallback_providers` entirely.
+  Needed when two autoheal jobs run side by side (compression + vision): the
+  vision job must not fight the compression job over the same list. Dry-run
+  and write paths both honour it; `model.provider`/`model.default` were never
+  touched and still are not.
+
 ## [0.8.0] — 2026-09-05
 
 `--task vision` now heals `auxiliary.vision` with a probe that actually tests
@@ -12,7 +30,7 @@ vision — a text-only model can no longer be certified into a vision route.
 
 ### Added
 
-- **Vision-aware probe.** `--task vision` sends a 1x1 PNG in the probe
+- **Vision-aware probe.** `--task vision` sends a 16×16 PNG in the probe
   payload. A model that accepts images answers normally; a text-only model
   refuses with `400 Model do not support image input`, which is now classified
   as a **permanent** verdict and demoted on the first strike.

@@ -354,6 +354,39 @@ def test_apply_heals_dead_chat_fallback_chain(home, monkeypatch, capsys):
     assert cfg['model']['default'] == 'alpha-chat'
 
 
+def test_no_chat_chain_leaves_fallback_providers_alone(home, monkeypatch,
+                                                       capsys):
+    """--no-chat-chain must skip the top-level list entirely.
+
+    Two autoheal jobs may run side by side (compression + vision); the vision
+    one must not fight the compression one over fallback_providers.
+    """
+    # seed a stale chat chain; even so, --no-chat-chain must not touch it
+    text = (home / 'config.yaml').read_text()
+    stale = ('fallback_providers:\n'
+             '  - provider: Dead\n'
+             '    model: dead-model\n'
+             '    base_url: https://dead.example/v1\n'
+             '    key_env: DEAD_API_KEY\n'
+             '    api_mode: chat_completions\n')
+    (home / 'config.yaml').write_text(text + stale)
+
+    monkeypatch.setattr(health, 'probe',
+                        fake_probe({'alpha-flash', 'beta-mini'}))
+    rc = cli.main(['--task', 'compression', '--apply', '--no-chat-chain'])
+    out = capsys.readouterr().out
+    cfg = read_cfg(home)
+
+    assert rc == 0
+    assert 'chat fallback_providers' not in out, \
+        'no-chat-chain must not report a chat chain write'
+    assert cfg['fallback_providers'] == [{
+        'provider': 'Dead', 'model': 'dead-model',
+        'base_url': 'https://dead.example/v1', 'key_env': 'DEAD_API_KEY',
+        'api_mode': 'chat_completions',
+    }], 'fallback_providers must be untouched'
+
+
 def test_chat_chain_dry_run_does_not_write(home, monkeypatch, capsys):
     (home / 'config.yaml').write_text(
         (home / 'config.yaml').read_text()

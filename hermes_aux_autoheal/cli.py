@@ -55,6 +55,9 @@ def build_parser():
     p.add_argument('--chat-depth', type=int, default=router.DEFAULT_CHAT_CHAIN_DEPTH,
                    help='entries to keep in the CHAT model\'s fallback_providers '
                         f'(default: {router.DEFAULT_CHAT_CHAIN_DEPTH})')
+    p.add_argument('--no-chat-chain', action='store_true',
+                   help='do not touch the top-level fallback_providers at all '
+                        '(use when another process already maintains it)')
     p.add_argument('--call-timeout', type=int, default=router.DEFAULT_CALL_TIMEOUT,
                    help='per-entry timeout written into the route, seconds')
     p.add_argument('--probe-timeout', type=float,
@@ -201,7 +204,7 @@ def main(argv=None):
     chat_desired = None
     model_cfg = config.get('model') or {}
     chat_primary = (model_cfg.get('provider'), model_cfg.get('default'))
-    if chat_primary[0] and chat_primary[1]:
+    if chat_primary[0] and chat_primary[1] and not args.no_chat_chain:
         chat_current = config.get('fallback_providers')
         chat_incumbent = tuple(chat_current) if isinstance(chat_current, list) else ()
         chat_chain = router.pick_chat_chain(

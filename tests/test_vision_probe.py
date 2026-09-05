@@ -5,7 +5,7 @@ answers that. A vision route needs a model that accepts an image payload —
 asking a text-only model for a vision route is how a conversation ends with
 ``Model do not support image input`` on every image the user sends.
 
-The probe carries a 1x1 PNG. A text-only model refuses it with a 400, which is
+The probe carries a 16×16 PNG. A text-only model refuses it with a 400, which is
 classified as a permanent verdict, so it is demoted on the first strike and
 never routed for vision. The health cache is scoped per task, so a verdict
 earned on the text probe cannot leak into the vision route (or back).

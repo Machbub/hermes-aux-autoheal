@@ -64,12 +64,14 @@ def failure_kind(err):
     return 'ambiguous'
 
 
-# One 1x1 PNG. Small enough to be noise in any request, real enough that a
+# One 16x16 PNG. Small enough to be noise in any request, real enough that a
 # text-only model refuses it — the whole point of probing vision with an image.
-# (data URL of a 1x1 transparent pixel)
+# 16x16, not 1x1: several providers reject images smaller than 10px
+# (e.g. "height:1 or width:1 must be larger than 10").
+# (data URL of a 16x16 solid-red pixel)
 VISION_PROBE_IMAGE = (
     'data:image/png;base64,'
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mP4z8DwnxLMMGrAqAGjBgwXAwAwxP4QisZM5QAAAABJRU5ErkJggg=='
 )
 
 

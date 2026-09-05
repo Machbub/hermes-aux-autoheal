@@ -77,8 +77,8 @@ difference: **the probe carries a real image**, not just text.
 
 A text-only model answers a `'ping'` probe with a happy 200 — that is why the
 plain probe would certify it for a vision route, and why a vision route built
-from it fails on every image the user sends. The vision probe is a 1x1 PNG in
-a multimodal payload:
+from it fails on every image the user sends. The vision probe is a tiny 16×16
+PNG in a multimodal payload:
 
 - a model that accepts images answers it like any other completion;
 - a text-only model refuses it with a `400` ("Model do not support image
@@ -321,6 +321,7 @@ leaves the document byte-identical.
 | `--max-discovered` | 25 | cap on models taken from one provider listing |
 | `--chain-depth` | 3 | fallback entries to keep |
 | `--chat-depth` | 4 | entries to keep in the chat model's `fallback_providers` |
+| `--no-chat-chain` | off | never touch the top-level `fallback_providers` |
 | `--call-timeout` | 300 | timeout written into each route entry |
 | `--probe-timeout` | 45 | health probe timeout |
 | `--min-context` | 0 | skip models with a known window below this |
@@ -350,8 +351,8 @@ Worth knowing before you rely on it:
 - **A probe is a sample, not a guarantee.** A model can pass at 12:00 and be
   gone at 12:03. This narrows the window; the `fallback_chain` is still what
   saves an in-flight call.
-- **Vision probing costs a real image per model per TTL window.** One 1x1 PNG
-  against a metered multimodal key is near-zero, but it is a genuine
+- **Vision probing costs a real image per model per TTL window.** One 16×16
+  PNG against a metered multimodal key is near-zero, but it is a genuine
   multimodal request, not the 4-text-token probe.
 - **A small probe cannot see a per-model quota wall.** Measured on a live
   install: **441 `HTTP 429` responses in real traffic** on one model while the
