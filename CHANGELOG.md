@@ -7,6 +7,38 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **README: audience framing moved from experience level to config shape.** A new
+  "Is this for your install?" section answers the question by what
+  `custom_providers` looks like — several separate providers with hand-named
+  models, or one relay behind a single `base_url` — because that is checkable in
+  five seconds and "are you past the beginner stage?" is not. The relay case gets
+  a straight answer: fewer entries to keep correct, the relay already covers
+  upstream outages per request, so the job here is narrower. Not empty, though —
+  a name vanishing from a relay's own catalogue while still being listed is the
+  incident this project started from.
+
+  The section leads with the strongest argument *against* scheduled probing, the
+  441 real-traffic `429`s against a probe still returning `200 OK`, rather than
+  burying it in Limits. A reader who finds that on their own after installing
+  trusts the rest less.
+
+- **The proxy comparison now names blast radius instead of resource cost.** "One
+  more process on a small VPS" is a weak argument: a small proxy is tens of
+  megabytes and that rarely decides anything. The real asymmetry is what happens
+  when the component dies — this tool dying leaves `config.yaml` frozen at the
+  last verified-alive route and Hermes still working; a proxy dying takes every
+  request with it.
+
+- **STABILITY.md states its purpose and its live number up front.** It reads as a
+  tour of internals; it is actually the answer to "is a tool that rewrites my
+  config on a timer safe to leave running?" — for which the honest first answer
+  was no (53% of ticks wrote). The summary table gains a live row, re-derived from
+  the log rather than carried over: **65 writes / 673 ticks = 9.7%**, against
+  replay figures as low as 4.0%. A replay is not a steady state, and the gap
+  between those two numbers is now stated instead of implied.
+
 ### Added
 
 - **`tests/doc_links.py`** — the documentation link check is now a test, not a
@@ -37,10 +69,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `README.md` four different ways to confirm the suite goes red on the actual
   docs rather than only on synthetic fixtures.
 
-### Changed
-
 - Test count in `README.md` and `STABILITY.md` re-derived from a run rather than
-  incremented by hand: **423**.
+  incremented by hand: **423**. `STABILITY.md` still said 339 — four releases
+  stale.
 
 ## [0.8.3] — 2026-09-06
 

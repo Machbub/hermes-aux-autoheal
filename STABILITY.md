@@ -4,6 +4,16 @@ Everything here was found by measuring a running install, not by reasoning ahead
 of it. The README states the conclusions; this file keeps the evidence, including
 the attempts that made things worse.
 
+It is not a tour of the internals. It answers one question: **is a tool that
+rewrites your config on a timer safe to leave running?** The first honest answer
+was no. Probe-and-write with no guards rewrote `config.yaml` on 130 of 245 ticks —
+53%, most of them changing nothing that mattered, which is worse than leaving the
+file alone. Everything below is how that came down, what each guard cost to find,
+and where it still sits: **65 writes across 673 live ticks, 9.7%**, measured on
+the install this was written on. Replays of individual guards go lower; a replay
+is not a steady state, and the difference between those two numbers is the honest
+part of this file.
+
 Numbers are quoted with the window they were taken over. A single headline figure
 from a short window is flattering by accident — one of the rates below fell to
 6.7% over fifteen ticks and rose to 10.8% over ninety-three, on identical code.
@@ -198,6 +208,16 @@ observation over the same window was 7.0%, which is how the replay was validated
 | chain defence, replayed on that same 6.5h (0.5.0) | 100 | 0 | 0% |
 | chat tie-break tail, replayed (0.6.2) | 200 | 2 | 1% |
 | seatable-challenger check, replayed (0.7.1) | 400 | — | 9.2% → 4.0% |
+| **live, all guards, through 0.8.3** | **673** | **65** | **9.7%** |
+
+Read the last row against the replay rows above it, not instead of them. The
+replays measure one guard on the pool it was built for; the live row is every
+guard together against four days of real provider behaviour — in that window the
+log carries an exhausted account balance, a model whose quota was "temporarily
+paused", a `model_not_found` on a name still being listed, and one model timing
+out on 115 probes. 9.7% is the number to plan around. Anyone quoting the 4.0% as
+this tool's steady state — including its own release notes, if they ever do — is
+quoting a replay.
 
 Two rows worth reading carefully. Hysteresis alone made churn **worse** — the
 margins were calibrated for noise an order of magnitude smaller than the real

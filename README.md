@@ -70,6 +70,36 @@ judgement about any vendor.
 
 Dry run is the default. Nothing writes your config until you pass `--apply`.
 
+## Is this for your install?
+
+Not a question about experience level. Open `config.yaml`, look at
+`custom_providers`, and the shape answers it in five seconds.
+
+**Several genuinely separate providers, models named by hand.** Every one of
+those names was typed against whatever the provider offered that week, and
+nothing re-reads them. This tool has work to do.
+
+**One relay or gateway behind a single `base_url`.** Fewer entries to keep
+correct, and the relay already covers upstream outages for a model name it still
+serves — that part is per-request, which this tool cannot match. What a relay does
+**not** cover is a name disappearing from its own catalogue while still being
+listed, and that is not a hypothetical: it is the incident at the top of this
+README. The model was retired weeks earlier and `/v1/models` still advertised it.
+So the job here is narrower than the rest of this README describes — keep the
+handful of names you pinned behind that one endpoint real — but it is not empty.
+
+**Both shapes at once.** Common, and fine: pin what you hold keys for, point one
+entry at the relay, and both get probed.
+
+Weigh one measured fact against all of the above, because it is the strongest
+argument against scheduled probing anywhere in this README: on a live install,
+**441 `HTTP 429` responses in real traffic on one model while the 4-token probe
+kept returning `200 OK`**
+([paired logs](STABILITY.md#the-quota-wall-a-probe-cannot-see)). Real traffic sees
+what a probe cannot. That is a floor on what any prober can promise, and it is why
+[a proxy and this tool are not competing
+answers](#how-this-differs-from-a-proxy-or-router).
+
 ## Vision routes
 
 `--task vision` heals `auxiliary.vision` the same way, with one critical
@@ -316,6 +346,15 @@ Use a proxy when you want per-request failover and a single endpoint for many
 tools. Use this when you want no extra process in front of your models, a
 config file you can still read, and a route that is correct on disk rather
 than corrected in flight.
+
+One asymmetry worth stating plainly, since it is the real reason to keep a
+component out of the request path rather than the RAM it would use — a small proxy
+costs tens of megabytes, which is rarely what decides anything. It is the blast
+radius: if this tool dies, `config.yaml` freezes at the last route it verified
+alive and Hermes keeps working. If a proxy dies, every request through it dies
+with it. For a personal install that asymmetry may outweigh the faster reaction;
+for anything carrying real traffic, per-request failover is worth a process you
+have to keep up.
 
 ## Writing config safely
 
